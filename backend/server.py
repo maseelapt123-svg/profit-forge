@@ -22,7 +22,7 @@ import yfinance as yf
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-from strategies import PLUGIN_DEFAULTS, PLUGIN_META, FEES, compute_signals, smc_analyze, atr, run_backtest, optimize, strategy_signals, trend_filtered, ema, rsi  # noqa: E402
+from strategies import PLUGIN_DEFAULTS, PLUGIN_META, FEES, compute_signals, smc_analyze, atr, run_backtest, optimize, strategy_signals, trend_filtered, apply_filters, mtf_filtered, htf_trend, ema, rsi  # noqa: E402
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -104,6 +104,20 @@ async def get_df(symbol: str, tf: str, long: bool = False) -> pd.DataFrame:
     if rule:
         df = df.resample(rule).agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
     return df
+
+
+HTF_MAP = {"1m": "15m", "5m": "1h", "15m": "4h", "1h": "4h", "4h": "1d", "1d": None}
+
+
+async def get_htf(symbol: str, tf: str) -> Optional[pd.DataFrame]:
+    """Higher timeframe used to confirm trend (e.g. 5m entries need 1H trend)."""
+    h = HTF_MAP.get(tf)
+    if not h:
+        return None
+    try:
+        return await get_df(symbol, h, long=True)
+    except HTTPException:
+        return None
 
 
 def price_decimals(p: float) -> int:
@@ -281,7 +295,7 @@ async def put_plugins(body: PluginsIn, request: Request):
     return {"plugins": await user_plugins(u["user_id"])}
 
 # ---------------------------------------------------------------- signals
-def build_signal(symbol: str, df: pd.DataFrame, plugins: dict, lookback: int = 3) -> dict:
+def build_signal(symbol: str, df: pd.DataFrame, plugins: dict, lookback: int = 3, htf: Optional[pd.DataFrame] = None, tf: str = "1h") -> dict:
     a = atr(df).iloc[-1]
     last = float(df["close"].iloc[-1])
     votes, triggered = 0, []
@@ -290,6 +304,7 @@ def build_signal(symbol: str, df: pd.DataFrame, plugins: dict, lookback: int = 3
             continue
         sig = compute_signals(name, df, cfg)
         sig = trend_filtered(df, sig)
+        sig = mtf_filtered(df, sig, htf)
         recent = sig[-lookback:]
         nz = recent[recent != 0]
         if len(nz):
@@ -299,6 +314,7 @@ def build_signal(symbol: str, df: pd.DataFrame, plugins: dict, lookback: int = 3
     enabled = sum(1 for c in plugins.values() if c.get("enabled"))
     direction = "BUY" if votes > 0 else "SELL" if votes < 0 else "NEUTRAL"
     trend = "alta" if last > float(ema(df["close"], 200).iloc[-1]) else "baixa"
+    htf_dir = int(htf_trend(df, htf)[-1]) if htf is not None and not htf.empty else None
     sl_m, rr = 1.5, 2.0
     sl = last - sl_m * a if direction == "BUY" else last + sl_m * a
     tp = last + rr * sl_m * a if direction == "BUY" else last - rr * sl_m * a
@@ -307,6 +323,7 @@ def build_signal(symbol: str, df: pd.DataFrame, plugins: dict, lookback: int = 3
         "entry": last, "stop_loss": float(sl), "take_profit": float(tp), "decimals": price_decimals(last),
         "confidence": round(abs(votes) / enabled * 100) if enabled else 0,
         "triggered": triggered, "trend": trend, "rsi": round(float(rsi(df["close"]).iloc[-1]), 1),
+        "htf": HTF_MAP.get(tf), "htf_trend": htf_dir,
     }
 
 
@@ -320,7 +337,8 @@ async def signals(request: Request, category: str = "crypto", tf: str = "1h"):
     async def one(sym):
         try:
             df = await get_df(sym, tf)
-            return build_signal(sym, df, plugins)
+            htf = await get_htf(sym, tf)
+            return build_signal(sym, df, plugins, htf=htf, tf=tf)
         except HTTPException:
             return None
     res = [r for r in await asyncio.gather(*[one(s) for s, _ in ASSETS[category]]) if r]
@@ -338,6 +356,7 @@ class BacktestIn(BaseModel):
     capital: float = 10000
     trend_filter: bool = True
     breakeven: bool = True
+    mtf: bool = False
 
 
 @api.post("/backtest")
@@ -352,9 +371,11 @@ async def backtest(body: BacktestIn, request: Request):
     if len(df) < 250:
         raise HTTPException(400, "Histórico insuficiente para backtest")
     fee = FEES[ASSET_INFO[body.symbol]["category"]]
+    htf = await get_htf(body.symbol, body.tf) if body.mtf else None
     res = await asyncio.to_thread(run_backtest, df, body.strategy, plugins, body.sl_atr, body.rr, body.risk_pct, body.capital,
-                                  fee, body.trend_filter, body.breakeven)
+                                  fee, body.trend_filter, body.breakeven, body.mtf and htf is not None, htf)
     res.update({"symbol": body.symbol, "display": display(body.symbol), "tf": body.tf, "strategy": body.strategy,
+                "mtf": body.mtf and htf is not None, "htf": HTF_MAP.get(body.tf),
                 "from": df.index[0].isoformat(), "to": df.index[-1].isoformat(), "bars": len(df)})
     await db.backtests.insert_one({"backtest_id": uuid.uuid4().hex, "user_id": u["user_id"],
                                    "symbol": body.symbol, "tf": body.tf, "strategy": body.strategy,
@@ -374,9 +395,69 @@ async def optimize_ep(body: OptimizeIn, request: Request):
     if len(df) < 600:
         raise HTTPException(400, "Histórico insuficiente para otimizar")
     fee = FEES[ASSET_INFO[body.symbol]["category"]]
-    res = await asyncio.to_thread(optimize, df, plugins, fee)
-    res.update({"symbol": body.symbol, "display": display(body.symbol), "tf": body.tf, "bars": len(df)})
+    htf = await get_htf(body.symbol, body.tf)
+    res = await asyncio.to_thread(optimize, df, plugins, fee, 1.0, 10000.0, 0.7, htf)
+    res.update({"symbol": body.symbol, "display": display(body.symbol), "tf": body.tf, "htf": HTF_MAP.get(body.tf), "bars": len(df)})
     return res
+
+
+OPT_TFS = ["1m", "5m", "15m", "1h", "4h", "1d"]
+_opt_jobs: Dict[str, dict] = {}
+
+
+class OptimizeAllIn(BaseModel):
+    symbol: str
+
+
+async def _optimize_all(job_id: str, symbol: str, plugins: dict):
+    job = _opt_jobs[job_id]
+    fee = FEES[ASSET_INFO[symbol]["category"]]
+    for tf in OPT_TFS:
+        job["current"] = tf
+        entry = {"tf": tf, "htf": HTF_MAP.get(tf), "best": None, "tested": 0, "error": None}
+        try:
+            df = await get_df(symbol, tf, long=True)
+            if len(df) < 600:
+                entry["error"] = "Histórico insuficiente"
+            else:
+                htf = await get_htf(symbol, tf)
+                r = await asyncio.to_thread(optimize, df, plugins, fee, 1.0, 10000.0, 0.7, htf)
+                entry.update({"best": r["best"], "tested": r["tested"], "bars": len(df)})
+        except HTTPException as e:
+            entry["error"] = e.detail
+        except Exception as e:  # keep the job alive for the other timeframes
+            logger.exception("optimize-all %s %s", symbol, tf)
+            entry["error"] = str(e)
+        job["results"].append(entry)
+    job["status"] = "done"
+    job["current"] = None
+
+
+@api.post("/optimize/all")
+async def optimize_all_start(body: OptimizeAllIn, request: Request):
+    u = await get_user(request)
+    if body.symbol not in ASSET_INFO:
+        raise HTTPException(404, "Ativo desconhecido")
+    plugins = await user_plugins(u["user_id"])
+    now = time.time()
+    for jid in [j for j, v in _opt_jobs.items() if v["status"] == "done" and now - v["started"] > 3600]:
+        _opt_jobs.pop(jid, None)
+    if any(v["user_id"] == u["user_id"] and v["status"] == "running" for v in _opt_jobs.values()):
+        raise HTTPException(429, "Já tens uma otimização em curso")
+    job_id = uuid.uuid4().hex[:12]
+    _opt_jobs[job_id] = {"job_id": job_id, "user_id": u["user_id"], "symbol": body.symbol, "display": display(body.symbol), "started": now,
+                         "status": "running", "current": OPT_TFS[0], "total": len(OPT_TFS), "results": []}
+    asyncio.create_task(_optimize_all(job_id, body.symbol, plugins))
+    return {"job_id": job_id}
+
+
+@api.get("/optimize/all/{job_id}")
+async def optimize_all_status(job_id: str, request: Request):
+    u = await get_user(request)
+    job = _opt_jobs.get(job_id)
+    if not job or job["user_id"] != u["user_id"]:
+        raise HTTPException(404, "Otimização não encontrada")
+    return {k: v for k, v in job.items() if k != "user_id"}
 
 # ---------------------------------------------------------------- AI analysis
 class AnalyzeIn(BaseModel):
@@ -560,16 +641,18 @@ async def reset_portfolio(request: Request):
 
 
 # ---------------------------------------------------------------- auto-trading bot (paper)
-BOT_DEFAULT = {"enabled": False, "symbols": ["BTC-USD", "ETH-USD", "EURUSD=X"], "tf": "1h", "strategy": "smc", "trend_filter": True,
+BOT_DEFAULT = {"enabled": False, "symbols": ["BTC-USD", "ETH-USD", "EURUSD=X"], "tf": "1h", "strategy": "smc", "trend_filter": True, "mtf": True, "setups": [],
                "risk_pct": 1.0, "sl_atr": 1.5, "rr": 2.0, "max_positions": 3}
 
 
-class BotOverride(BaseModel):
+class BotSetup(BaseModel):
+    symbol: str
     tf: str
     strategy: str
     sl_atr: float = Field(1.5, ge=0.5, le=5)
     rr: float = Field(2.0, ge=0.5, le=6)
     trend_filter: bool = True
+    mtf: bool = False
 
 
 class BotIn(BaseModel):
@@ -582,7 +665,8 @@ class BotIn(BaseModel):
     rr: float = Field(2.0, ge=0.5, le=6)
     max_positions: int = Field(3, ge=1, le=10)
     trend_filter: bool = True
-    overrides: Dict[str, BotOverride] = {}
+    mtf: bool = True
+    setups: List[BotSetup] = []
 
 
 async def get_bot(user_id: str) -> dict:
@@ -635,38 +719,47 @@ async def _run_bot_cycle(bot: dict) -> int:
     plugins = await user_plugins(uid)
     acc = await get_account(uid)
     opened = 0
-    for sym in bot["symbols"]:
+    setups = bot.get("setups") or []
+    with_setup = {x["symbol"] for x in setups}
+    jobs = [{"symbol": s, "tf": bot["tf"], "strategy": bot["strategy"], "sl_atr": bot["sl_atr"], "rr": bot["rr"],
+             "trend_filter": bot.get("trend_filter", True), "mtf": bot.get("mtf", True)}
+            for s in bot["symbols"] if s not in with_setup] + setups
+    for cfg in jobs:
+        sym = cfg["symbol"]
         if sym not in ASSET_INFO:
             continue
-        cfg = {**bot, **(bot.get("overrides") or {}).get(sym, {})}
+        key = f"{sym}|{cfg['tf']}"
+        tag = f"{display(sym)} {cfg['tf'].upper()}"
         try:
             df = await get_df(sym, cfg["tf"])
         except HTTPException:
             continue
         if len(df) < 210:
             continue
+        htf = await get_htf(sym, cfg["tf"]) if cfg.get("mtf") else None
         sig = strategy_signals(df, cfg["strategy"], plugins)
-        if cfg.get("trend_filter", True) and cfg["strategy"] != "combo":
-            sig = trend_filtered(df, sig)
+        sig = apply_filters(df, sig, cfg["strategy"], cfg.get("trend_filter", True), bool(cfg.get("mtf")) and htf is not None, htf)
         s = int(sig[-2])  # last closed bar, avoids repainting
         bar_ts = df.index[-2].isoformat()
         if s == 0:
             continue
-        state_key = f"last_bar.{sym.replace('.', '_')}"
-        if bot.get("last_bar", {}).get(sym.replace('.', '_')) == bar_ts:
+        skey = key.replace('.', '_')
+        state_key = f"last_bar.{skey}"
+        if bot.get("last_bar", {}).get(skey) == bar_ts:
             continue
         await db.bots.update_one({"user_id": uid}, {"$set": {state_key: bar_ts}}, upsert=True)
         side = "BUY" if s == 1 else "SELL"
-        existing = await db.positions.find_one({"user_id": uid, "symbol": sym, "status": "open", "source": "bot"}, {"_id": 0})
+        existing = await db.positions.find_one({"user_id": uid, "status": "open", "source": "bot",
+                                                "$or": [{"setup": key}, {"symbol": sym, "setup": {"$exists": False}}]}, {"_id": 0})
         price = float(df["close"].iloc[-1])
         if existing:
             if existing["side"] == side:
                 continue
             pnl = await close_position(existing, price, "signal")
-            await bot_log(uid, "close", f"{display(sym)} fechado por sinal contrário: {pnl:+.2f} $", sym)
+            await bot_log(uid, "close", f"{tag} fechado por sinal contrário: {pnl:+.2f} $", sym)
         n_open = await db.positions.count_documents({"user_id": uid, "status": "open", "source": "bot"})
         if n_open >= bot["max_positions"]:
-            await bot_log(uid, "skip", f"Sinal {side} em {display(sym)} ignorado: limite de {bot['max_positions']} posições", sym)
+            await bot_log(uid, "skip", f"Sinal {side} em {tag} ignorado: limite de {bot['max_positions']} posições", sym)
             continue
         a = float(atr(df).iloc[-1])
         if a <= 0:
@@ -674,18 +767,18 @@ async def _run_bot_cycle(bot: dict) -> int:
         acc = await get_account(uid)
         stop = cfg["sl_atr"] * a
         if stop < 8 * FEES[ASSET_INFO[sym]["category"]] * price:
-            await bot_log(uid, "skip", f"Sinal {side} em {display(sym)} ignorado: stop demasiado curto face aos custos", sym)
+            await bot_log(uid, "skip", f"Sinal {side} em {tag} ignorado: stop demasiado curto face aos custos", sym)
             continue
         qty = (acc["balance"] * bot["risk_pct"] / 100) / stop
         qty = min(qty, acc["balance"] * 10 / price)
         d = 1 if side == "BUY" else -1
         pos = {"position_id": uuid.uuid4().hex[:16], "user_id": uid, "symbol": sym, "side": side, "qty": float(qty),
                "entry": price, "stop_loss": price - d * stop, "take_profit": price + d * stop * cfg["rr"],
-               "status": "open", "source": "bot", "stop_dist": float(stop), "opened_at": datetime.now(timezone.utc).isoformat()}
+               "status": "open", "source": "bot", "setup": key, "tf": cfg["tf"], "stop_dist": float(stop), "opened_at": datetime.now(timezone.utc).isoformat()}
         await db.positions.insert_one(dict(pos))
         opened += 1
         dec = price_decimals(price)
-        await bot_log(uid, "open", f"{'COMPRA' if side == 'BUY' else 'VENDA'} {display(sym)} @ {price:.{dec}f} · SL {pos['stop_loss']:.{dec}f} · TP {pos['take_profit']:.{dec}f}", sym)
+        await bot_log(uid, "open", f"{'COMPRA' if side == 'BUY' else 'VENDA'} {tag}{(' · tendência ' + HTF_MAP[cfg['tf']].upper() + ' confirmada') if cfg.get('mtf') and htf is not None else ''} @ {price:.{dec}f} · SL {pos['stop_loss']:.{dec}f} · TP {pos['take_profit']:.{dec}f}", sym)
     await db.bots.update_one({"user_id": uid}, {"$set": {"last_run": datetime.now(timezone.utc).isoformat()}}, upsert=True)
     return opened
 
@@ -729,16 +822,21 @@ async def bot_put(body: BotIn, request: Request):
     if body.strategy != "combo" and body.strategy not in PLUGIN_DEFAULTS:
         raise HTTPException(400, "Estratégia inválida")
     syms = [s for s in body.symbols if s in ASSET_INFO]
-    for sym, ov in body.overrides.items():
-        if sym not in ASSET_INFO or ov.tf not in TIMEFRAMES or (ov.strategy != "combo" and ov.strategy not in PLUGIN_DEFAULTS):
-            raise HTTPException(400, f"Configuração específica inválida para {sym}")
+    seen = set()
+    for st in body.setups:
+        if st.symbol not in ASSET_INFO or st.tf not in TIMEFRAMES or (st.strategy != "combo" and st.strategy not in PLUGIN_DEFAULTS):
+            raise HTTPException(400, f"Setup inválido para {st.symbol} {st.tf}")
+        if (st.symbol, st.tf) in seen:
+            raise HTTPException(400, f"Setup duplicado: {st.symbol} {st.tf}")
+        seen.add((st.symbol, st.tf))
     if body.enabled and not syms:
         raise HTTPException(400, "Escolhe pelo menos um ativo")
     prev = await get_bot(u["user_id"])
     data = body.model_dump()
     data["symbols"] = syms
-    data["overrides"] = {k: v.model_dump() for k, v in body.overrides.items() if k in syms}
-    await db.bots.update_one({"user_id": u["user_id"]}, {"$set": {**data, "updated_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    data["setups"] = [st.model_dump() for st in body.setups if st.symbol in syms]
+    data.pop("overrides", None)
+    await db.bots.update_one({"user_id": u["user_id"]}, {"$set": {**data, "updated_at": datetime.now(timezone.utc).isoformat()}, "$unset": {"overrides": ""}}, upsert=True)
     if body.enabled != prev["enabled"]:
         await bot_log(u["user_id"], "status", "Robô ativado" if body.enabled else "Robô parado")
     return {"ok": True}

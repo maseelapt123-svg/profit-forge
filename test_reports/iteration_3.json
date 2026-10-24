@@ -1,0 +1,41 @@
+{
+  "summary": "Tested only the new Multi-Timeframe (MTF) features: the backend (13 pytest tests plus an in-process bot-cycle probe) and the frontend (Playwright at 390x844 on Backtest, Bot, Signals and Portfolio). Everything requested works. HTF map is correct. The htf_trend unit test showed no look-ahead: the open HTF bar is ignored and a closed HTF bar only counts from the next HTF bar onward. Backtest on BTC 5m: mtf=false gave 37 trades, mtf=true gave 24 (htf='1h'). On 1d, htf is null and mtf is false. Signals at 5m return htf='1h' and htf_trend in {-1,0,1}. In this run all signals were NEUTRAL, so the rule 'BUY only when htf_trend==1, SELL only when -1' could not be seen live; the code enforces it through mtf_filtered. optimize/all finished in about 22s with 6 TF rows and a 'mtf' flag in 'best'. It returns 404 for an unknown job, an unknown symbol, or a bogus token. PUT /bot setups: duplicates and an invalid tf/strategy return 400, sl_atr=9 returns 422, and setups for symbols not in the list are dropped. Bot cycle with a forced signal (monkeypatched): BTC 5m and BTC 1h opened separate positions (setup 'BTC-USD|5m' / 'BTC-USD|1h', with a tf field). ETH used the general config. Logs read 'COMPRA BTC/USD 5M · tendência 1H confirmada'. A second cycle opened nothing new. UI: the 'Confirmação tendência 1H' chip shows on 5m and is hidden on 1D. Otimizar TFs shows opt-progress, then the opt-row-* rows, then Aplicar, which switches the TF and runs the backtest. 'Usar no Robô (4 timeframes)' wrote 4 setups. The card resets when the asset changes. Bot screen: the setups list shows, and removing a setup saves straight to the server. Signals show '· 1H baixa/lateral'. Portfolio shows the tag 'ROBÔ 5M'. Two minor UI bugs found (see below). No deprecated Expo packages found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/optimize/all", "issue": "_opt_jobs is kept only in memory and never cleaned up. Jobs disappear on a backend restart or reload (uvicorn --reload fired during testing), and the dict grows without limit. There is no per-user limit on concurrent jobs, so CPU-heavy optimizations can be spammed."},
+      {"endpoint": "bot cycle", "issue": "An existing position is looked up only by the 'setup' key. Bot positions opened before this change have no 'setup' field, so they are never closed on an opposite signal and can be duplicated."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Bot screen setups list", "issue": "If you deselect an asset that has setups and press save, the backend drops those setups (server: setups=0), but the UI still shows them (3 rows). cfg is only set from the first query result and never re-synced after saving. Saving again after re-selecting the asset brings the stale setups back.", "testID": "bot-setups", "priority": "MEDIUM"},
+      {"component": "Backtest optimizer card", "issue": "If GET /optimize/all/{job} returns 404 (for example after a backend restart), optData is undefined and optRunning stays true. 'A otimizar …' then spins forever with no error and no reset.", "testID": "opt-progress", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Backtest", "issues": ["The opt-apply-<tf> 'Aplicar' button is 36px tall, below the 44px minimum touch target.", "The 'Confirmação tendência 1H' chip is partly off-screen in the horizontal chip row at 390px."]},
+      {"screen": "Bot", "issues": ["The 'Confirmação timeframe superior (ex: 5m→1H)' chip is cut off at 390px; consider a shorter label.", "Setup rows do not show whether the EMA200 trend_filter is on (only mtf is shown)."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iter3_mtf.py", "/app/backend/tests/manual_bot_mtf_setups_probe.py", "/app/backend/tests/manual_seed_bot_pos.py", "/app/test_reports/pytest/iter3.xml"],
+  "action_items": [
+    "bot.tsx: after save succeeds, re-sync cfg from the server response or refetch (or filter cfg.setups by cfg.symbols locally) so dropped setups disappear from the UI.",
+    "backtest.tsx: handle job query errors (404): clear jobId and show a toast instead of spinning forever.",
+    "Optional: limit concurrent optimize/all jobs per user and expire finished jobs (TTL).",
+    "Optional: raise the opt-apply button height to 44px."
+  ],
+  "critical_code_review_comments": [
+    "htf_trend: shifting by 1 then ffill onto the LTF index is correct, with no look-ahead (verified by unit test). It relies on the HTF frame including the bar currently in progress; if the HTF feed lags, the trend is one bar stale (safe direction).",
+    "On 5m crypto with sl_atr 1.5, the cost guard (stop < 8*fee*price) often skips entries, both in the bot and in the backtest. This is consistent, but users may see bot 5m setups rarely trade.",
+    "sendAllToBot spreads the whole GET /bot object (user_id, last_run...) into the PUT body. Pydantic ignores the extra fields, so it works, but it is fragile."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter3_mtf.py", "/app/backend/tests/manual_bot_mtf_setups_probe.py", "/app/backend/tests/manual_seed_bot_pos.py"],
+  "success_rate": {"backend": "100% (13/13 pytest + bot probe)", "frontend": "~90% (all requested flows work; 2 minor UI bugs)"},
+  "seed_data_creation": "Temporary bot position TEST_botpos_5m was inserted and then removed. Test user restored: bot disabled, setups [], symbols [BTC-USD, ETH-USD, EURUSD=X], mtf true, portfolio reset.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run pytest with '-n 0' (pytest.ini adds xdist; parallel runs clash on the shared bot state). POST /bot/run requires the bot to be enabled. The live bot rarely opens trades, so use manual_bot_mtf_setups_probe.py (monkeypatches strategy_signals) to check multi-TF opening. Creating files under /app/backend makes uvicorn reload and wipes the in-memory optimize jobs.",
+  "rca_of_issue": "Stale setups on the Bot screen: in bot.tsx (lines 70-72), the useEffect sets cfg only when !cfg, so server-side changes (bot_put drops setups for symbols that are not selected) never reach local state."
+}

@@ -10,8 +10,8 @@ import { useToast } from "@/src/components/toast";
 import { Button, Center, ChipRow, haptic } from "@/src/components/ui";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Override = { tf: string; strategy: string; sl_atr: number; rr: number; trend_filter: boolean };
-type Bot = { overrides?: Record<string, Override>; trend_filter: boolean; enabled: boolean; symbols: string[]; tf: string; strategy: string; risk_pct: number; sl_atr: number; rr: number; max_positions: number; last_run?: string };
+type Setup = { symbol: string; tf: string; strategy: string; sl_atr: number; rr: number; trend_filter: boolean; mtf: boolean };
+type Bot = { setups?: Setup[]; mtf: boolean; trend_filter: boolean; enabled: boolean; symbols: string[]; tf: string; strategy: string; risk_pct: number; sl_atr: number; rr: number; max_positions: number; last_run?: string };
 type Resp = {
   bot: Bot; logs: { log_id: string; kind: string; msg: string; created_at: string }[];
   stats: { trades: number; pnl: number; wins: number; open: number }; assets: { symbol: string; display: string; category: string }[];
@@ -73,8 +73,9 @@ export default function BotScreen() {
 
   const save = useMutation({
     mutationFn: (b: Bot) => api("/bot", { method: "PUT", body: b }),
-    onSuccess: (_r, b) => {
-      qc.invalidateQueries({ queryKey: ["bot"] });
+    onSuccess: async (_r, b) => {
+      const fresh = await qc.fetchQuery({ queryKey: ["bot"], queryFn: () => api<Resp>("/bot") });
+      setCfg(fresh.bot);
       toast(b.enabled ? "Robô ativo — verifica sinais a cada minuto" : "Configuração guardada", "success");
     },
     onError: (e: Error) => toast(e.message, "error"),
@@ -143,27 +144,32 @@ export default function BotScreen() {
           <Text style={styles.section}>Timeframe</Text>
           <ChipRow options={TFS} value={cfg.tf} onChange={(v) => upd({ tf: v })} testID="bot-tf" />
           <ChipRow
-            options={[{ value: "trend", label: "Filtro de tendência EMA200" }]}
-            value={cfg.trend_filter ? ["trend"] : []}
-            onChange={() => upd({ trend_filter: !cfg.trend_filter })}
+            options={[
+              { value: "trend", label: "Filtro de tendência EMA200" },
+              { value: "mtf", label: "Confirmar TF superior" },
+            ]}
+            value={[...(cfg.trend_filter ? ["trend"] : []), ...(cfg.mtf ? ["mtf"] : [])]}
+            onChange={(v) => (v === "trend" ? upd({ trend_filter: !cfg.trend_filter }) : upd({ mtf: !cfg.mtf }))}
             testID="bot-trend-filter"
           />
           <Text style={styles.section}>Ativos ({cfg.symbols.length})</Text>
           <ChipRow options={q.data.assets.map((a) => ({ value: a.symbol, label: a.display }))} value={cfg.symbols} onChange={toggleSym} testID="bot-assets" />
-          {cfg.overrides && Object.keys(cfg.overrides).length > 0 && (
-            <View style={{ paddingHorizontal: 16, gap: 8, marginBottom: 8 }} testID="bot-overrides">
-              <Text style={styles.muted}>Configurações otimizadas por ativo (substituem a geral):</Text>
-              {Object.entries(cfg.overrides).map(([sym, o]) => (
-                <View key={sym} style={styles.override}>
+          {cfg.setups && cfg.setups.length > 0 && (
+            <View style={{ paddingHorizontal: 16, gap: 8, marginBottom: 8 }} testID="bot-setups">
+              <Text style={styles.muted}>
+                Setups otimizados ({cfg.setups.length}) — cada ativo é operado em vários timeframes com a sua própria configuração:
+              </Text>
+              {cfg.setups.map((o, idx) => (
+                <View key={`${o.symbol}-${o.tf}`} style={styles.override} testID={`bot-setup-${o.symbol}-${o.tf}`}>
                   <Text style={[styles.logMsg, { flex: 1 }]}>
-                    {q.data!.assets.find((a) => a.symbol === sym)?.display ?? sym} · {o.tf.toUpperCase()} · {STRATS.find((x) => x.value === o.strategy)?.label} · SL {o.sl_atr}x · R:R {o.rr}
+                    {q.data!.assets.find((a) => a.symbol === o.symbol)?.display ?? o.symbol} · {o.tf.toUpperCase()} · {STRATS.find((x) => x.value === o.strategy)?.label} · SL {o.sl_atr}x · R:R {o.rr}
+                    {o.mtf ? " · conf. TF superior" : ""}
                   </Text>
                   <Pressable
-                    testID={`bot-override-remove-${sym}`}
+                    testID={`bot-setup-remove-${o.symbol}-${o.tf}`}
                     style={styles.overrideX}
                     onPress={() => {
-                      const { [sym]: _omit, ...rest } = cfg.overrides!;
-                      const next = { ...cfg, overrides: rest };
+                      const next = { ...cfg, setups: cfg.setups!.filter((_, i) => i !== idx) };
                       setCfg(next);
                       save.mutate(next);
                     }}

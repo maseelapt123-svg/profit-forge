@@ -23,7 +23,9 @@ Follow-ups: "Faz trades automaticamente", "Está com resultados negativos", "Bai
 - Optimizer: ~130 combos, 70% train / 30% unseen test, only recommends setups positive on both; "Aplicar" and "Usar no Robô" (per-asset override)
 - AI analysis streaming (SMC plan, pt-PT)
 - Paper trading: orders with SL/TP, 10x margin cap, close, reset (2-tap confirm), auto SL/TP monitor
-- Auto-trading bot (paper): 60s loop, closed-bar signals, per-asset overrides, break-even, max positions, lock, activity log
+- Bot (paper): 60s loop, closed-bar signals, multi-timeframe setups per asset (same asset on several TFs, each optimized), higher-TF trend confirmation (1m→15m, 5m→1H, 15m→4H, 1H→4H, 4H→1D), break-even, max positions, lock, activity log
+- Multi-timeframe optimizer (background job, 6 TFs) → "Usar no Robô" adds all validated TF setups
+- Signals show higher-TF trend and only fire when it agrees
 
 ## Backlog
 - P1: Real broker connection (e.g. Binance / OANDA / Alpaca keys) — user wants later

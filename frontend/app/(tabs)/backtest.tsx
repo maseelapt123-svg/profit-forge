@@ -4,7 +4,7 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { api, fmt, money, pct } from "@/src/api";
+import { ApiError, api, fmt, money, pct } from "@/src/api";
 import { LineChart } from "@/src/components/charts";
 import { useToast } from "@/src/components/toast";
 import { Button, ChipRow, Segmented } from "@/src/components/ui";
@@ -29,13 +29,15 @@ const TFS = [
   { value: "1d", label: "1D" },
 ];
 
-type OptCand = { strategy: string; trend_filter: boolean; sl_atr: number; rr: number; train: Result["metrics"]; test: Result["metrics"] };
-type OptResult = { best: OptCand | null; candidates: OptCand[]; tested: number; symbol: string; display: string; tf: string };
+type OptCand = { strategy: string; trend_filter: boolean; mtf: boolean; sl_atr: number; rr: number; train: Result["metrics"]; test: Result["metrics"] };
+type OptRow = { tf: string; htf: string | null; best: OptCand | null; tested: number; error: string | null };
+type OptJob = { job_id: string; symbol: string; display: string; status: "running" | "done"; current: string | null; total: number; results: OptRow[] };
+const HTF: Record<string, string | null> = { "1m": "15m", "5m": "1h", "15m": "4h", "1h": "4h", "4h": "1d", "1d": null };
 type Result = {
   metrics: { skipped_cost?: number; net_profit: number; return_pct: number; win_rate: number; profit_factor: number; max_drawdown: number; total_trades: number; avg_r: number; buy_hold_pct: number; final_equity: number };
   equity: number[];
   trades: { dir: string; entry: number; exit: number; pnl: number; r: number; reason: string; closed: string }[];
-  display: string; from: string; to: string; bars: number; tf: string;
+  display: string; from: string; to: string; bars: number; tf: string; mtf?: boolean; htf?: string | null;
 };
 
 function Stepper({ label, value, step, min, max, onChange, testID, suffix = "" }: {
@@ -76,39 +78,72 @@ export default function Backtest() {
   const [risk, setRisk] = useState(1);
   const [trendFilter, setTrendFilter] = useState(true);
   const [breakeven, setBreakeven] = useState(true);
+  const [mtf, setMtf] = useState(true);
+  const [jobId, setJobId] = useState<string | null>(null);
   const toast = useToast();
   const qc = useQueryClient();
   const assets = useQuery({ queryKey: ["markets", cat], queryFn: () => api<{ symbol: string; display: string }[]>(`/markets?category=${cat}`) });
+  type Params = { tf: string; strategy: string; sl_atr: number; rr: number; trend_filter: boolean; mtf: boolean };
   const run = useMutation({
-    mutationFn: () => api<Result>("/backtest", { method: "POST", body: { symbol, tf, strategy, sl_atr: slAtr, rr, risk_pct: risk, trend_filter: trendFilter, breakeven } }),
+    mutationFn: (p?: Partial<Params>) =>
+      api<Result>("/backtest", {
+        method: "POST",
+        body: { symbol, tf, strategy, sl_atr: slAtr, rr, risk_pct: risk, trend_filter: trendFilter, breakeven, mtf, ...p },
+      }),
   });
-  const opt = useMutation({ mutationFn: () => api<OptResult>("/optimize", { method: "POST", body: { symbol, tf } }) });
-  const applyBest = (b: OptCand) => {
+  const startOpt = useMutation({
+    mutationFn: () => api<{ job_id: string }>("/optimize/all", { method: "POST", body: { symbol } }),
+    onSuccess: (r) => setJobId(r.job_id),
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const job = useQuery({
+    queryKey: ["optjob", jobId],
+    queryFn: () => api<OptJob>(`/optimize/all/${jobId}`),
+    enabled: !!jobId,
+    refetchInterval: (q) => (q.state.data?.status === "done" ? false : 2000),
+  });
+  useEffect(() => {
+    if (job.error && (job.error as ApiError).status === 404) {
+      setJobId(null);
+      toast("A otimização foi interrompida. Tenta novamente.", "error");
+    }
+  }, [job.error, toast]);
+  const optData = jobId ? job.data : undefined;
+  const optRunning = startOpt.isPending || (!!jobId && optData?.status !== "done");
+  const validRows = (optData?.results ?? []).filter((x) => x.best);
+  useEffect(() => {
+    setJobId(null);
+  }, [symbol]);
+
+  const applyRow = (row: OptRow) => {
+    const b = row.best!;
+    setTf(row.tf);
     setStrategy(b.strategy);
     setSlAtr(b.sl_atr);
     setRr(b.rr);
     setTrendFilter(b.trend_filter);
+    setMtf(b.mtf);
     setBreakeven(true);
-    setTimeout(() => run.mutate(), 0);
+    run.mutate({ tf: row.tf, strategy: b.strategy, sl_atr: b.sl_atr, rr: b.rr, trend_filter: b.trend_filter, mtf: b.mtf });
   };
-  const sendToBot = async (b: OptCand) => {
+  const sendAllToBot = async () => {
+    if (!optData) return;
     try {
       const cur = await api<{ bot: any }>("/bot");
-      const sym = opt.data!.symbol;
+      const sym = optData.symbol;
       const symbols = Array.from(new Set([...(cur.bot.symbols ?? []), sym]));
-      const overrides = { ...(cur.bot.overrides ?? {}), [sym]: { tf: opt.data!.tf, strategy: b.strategy, sl_atr: b.sl_atr, rr: b.rr, trend_filter: b.trend_filter } };
-      await api("/bot", { method: "PUT", body: { ...cur.bot, symbols, overrides } });
+      const others = (cur.bot.setups ?? []).filter((x: any) => x.symbol !== sym);
+      const mine = validRows.map((row) => ({
+        symbol: sym, tf: row.tf, strategy: row.best!.strategy, sl_atr: row.best!.sl_atr, rr: row.best!.rr,
+        trend_filter: row.best!.trend_filter, mtf: row.best!.mtf,
+      }));
+      await api("/bot", { method: "PUT", body: { ...cur.bot, symbols, setups: [...others, ...mine] } });
       qc.invalidateQueries({ queryKey: ["bot"] });
-      toast(`Robô: ${opt.data!.display} ${opt.data!.tf.toUpperCase()} usa esta configuração`, "success");
+      toast(`Robô: ${optData.display} vai operar em ${mine.length} timeframe(s) otimizados`, "success");
     } catch (e: any) {
       toast(e.message, "error");
     }
   };
-  const ob = opt.data?.best;
-  const { reset: resetOpt } = opt;
-  useEffect(() => {
-    resetOpt();
-  }, [symbol, tf, resetOpt]);
   const r = run.data;
   const m = r?.metrics;
 
@@ -139,9 +174,10 @@ export default function Backtest() {
           options={[
             { value: "trend", label: "Filtro de tendência EMA200" },
             { value: "be", label: "Break-even a 1R" },
+            ...(HTF[tf] ? [{ value: "mtf", label: `Confirmar ${HTF[tf]!.toUpperCase()}` }] : []),
           ]}
-          value={[...(trendFilter ? ["trend"] : []), ...(breakeven ? ["be"] : [])]}
-          onChange={(v) => (v === "trend" ? setTrendFilter((x) => !x) : setBreakeven((x) => !x))}
+          value={[...(trendFilter ? ["trend"] : []), ...(breakeven ? ["be"] : []), ...(mtf && HTF[tf] ? ["mtf"] : [])]}
+          onChange={(v) => (v === "trend" ? setTrendFilter((x) => !x) : v === "be" ? setBreakeven((x) => !x) : setMtf((x) => !x))}
           testID="bt-options"
         />
         <View style={styles.steppers}>
@@ -150,35 +186,48 @@ export default function Backtest() {
           <Stepper label="Risco/trade" value={risk} step={0.5} min={0.5} max={5} onChange={setRisk} testID="bt-risk" suffix="%" />
         </View>
 
-        {opt.isPending && <Text style={styles.empty}>A testar ~130 combinações (treino 70% / teste 30%)…</Text>}
-        {opt.isError && <Text style={styles.error}>{(opt.error as Error).message}</Text>}
-        {opt.data && (
+        {(optRunning || optData) && (
           <Animated.View entering={FadeInDown} style={[styles.card, styles.optCard]} testID="opt-results">
-            <Text style={styles.optTitle}>
-              Otimizador · {opt.data.display} {opt.data.tf.toUpperCase()} · {opt.data.tested} combinações
-            </Text>
-            {ob ? (
-              <>
-                <Text style={styles.optBest} testID="opt-best">
-                  {STRATS.find((x) => x.value === ob.strategy)?.label} · Stop {ob.sl_atr}x ATR · R:R {ob.rr}
-                  {ob.trend_filter ? " · c/ filtro" : ""}
-                </Text>
-                <View style={styles.optRow}>
-                  <Text style={styles.cardLabel}>Treino: {pct(ob.train.return_pct)} · PF {fmt(ob.train.profit_factor, 2)}</Text>
-                  <Text style={[styles.cardLabel, { color: ob.test.return_pct >= 0 ? colors.success : colors.error }]}>
-                    Teste (dados não vistos): {pct(ob.test.return_pct)} · {ob.test.total_trades} trades
-                  </Text>
-                </View>
-                <View style={{ flexDirection: "row", gap: 8 }}>
-                  <Button label="Aplicar" variant="ghost" style={{ flex: 1, height: 44 }} onPress={() => applyBest(ob)} testID="opt-apply-button" />
-                  <Button label="Usar no Robô" style={{ flex: 1, height: 44 }} onPress={() => sendToBot(ob)} testID="opt-bot-button" />
-                </View>
-              </>
-            ) : (
-              <Text style={styles.note} testID="opt-none">
-                Nenhuma configuração foi lucrativa em treino E teste para este ativo/timeframe. Experimenta um timeframe maior ou outro ativo — não operes esta combinação.
+            <Text style={styles.optTitle}>Otimizador multi-timeframe · {optData?.display ?? symbol}</Text>
+            {optRunning && (
+              <Text style={styles.cardLabel} testID="opt-progress">
+                A otimizar {optData?.current?.toUpperCase() ?? "…"} ({optData?.results.length ?? 0}/{optData?.total ?? 6}) · treino 70% / teste 30%
               </Text>
             )}
+            {(optData?.results ?? []).map((row) => (
+              <View key={row.tf} style={styles.optLine} testID={`opt-row-${row.tf}`}>
+                <Text style={styles.optTf}>{row.tf.toUpperCase()}</Text>
+                <View style={{ flex: 1 }}>
+                  {row.best ? (
+                    <>
+                      <Text style={styles.optBestSm}>
+                        {STRATS.find((x) => x.value === row.best!.strategy)?.label} · SL {row.best.sl_atr}x · R:R {row.best.rr}
+                        {row.best.trend_filter ? " · EMA200" : ""}
+                        {row.best.mtf && row.htf ? ` · conf. ${row.htf.toUpperCase()}` : ""}
+                      </Text>
+                      <Text style={[styles.cardLabel, { color: row.best.test.return_pct >= 0 ? colors.success : colors.error }]}>
+                        Treino {pct(row.best.train.return_pct)} · Teste {pct(row.best.test.return_pct)} · {row.best.test.total_trades} trades
+                      </Text>
+                    </>
+                  ) : (
+                    <Text style={styles.cardLabel}>{row.error ?? "Sem configuração lucrativa — não operar"}</Text>
+                  )}
+                </View>
+                {row.best && (
+                  <Pressable testID={`opt-apply-${row.tf}`} style={styles.optApply} onPress={() => applyRow(row)}>
+                    <Text style={styles.optApplyText}>Aplicar</Text>
+                  </Pressable>
+                )}
+              </View>
+            ))}
+            {optData?.status === "done" &&
+              (validRows.length ? (
+                <Button label={`Usar no Robô (${validRows.length} timeframes)`} style={{ height: 48 }} onPress={sendAllToBot} testID="opt-bot-button" />
+              ) : (
+                <Text style={styles.note} testID="opt-none">
+                  Nenhum timeframe foi lucrativo em treino E teste para este ativo. Não operes este ativo com estas estratégias.
+                </Text>
+              ))}
           </Animated.View>
         )}
         {run.isError && (
@@ -191,7 +240,7 @@ export default function Backtest() {
           <Animated.View entering={FadeInDown} style={{ paddingHorizontal: 16, gap: 12 }} testID="bt-results">
             <View style={styles.card}>
               <Text style={styles.cardLabel}>
-                {r.display} · {r.tf.toUpperCase()} · {r.bars} velas
+                {r.display} · {r.tf.toUpperCase()} · {r.bars} velas{r.mtf && r.htf ? ` · conf. ${r.htf.toUpperCase()}` : ""}
               </Text>
               <Text style={[styles.big, { color: m.return_pct >= 0 ? colors.success : colors.error }]} testID="bt-return">
                 {pct(m.return_pct)}
@@ -235,8 +284,8 @@ export default function Backtest() {
       </ScrollView>
       <View style={[styles.sticky, { paddingBottom: bottomChrome + 12 }]}>
         <View style={{ flexDirection: "row", gap: 8 }}>
-          <Button label="Otimizar" variant="ghost" loading={opt.isPending} onPress={() => opt.mutate()} testID="bt-optimize-button" style={{ flex: 1 }} />
-          <Button label={run.isPending ? "A simular…" : "Executar Backtest"} loading={run.isPending} onPress={() => run.mutate()} testID="bt-run-button" style={{ flex: 1.6 }} />
+          <Button label="Otimizar TFs" variant="ghost" loading={optRunning} onPress={() => startOpt.mutate()} testID="bt-optimize-button" style={{ flex: 1 }} />
+          <Button label={run.isPending ? "A simular…" : "Executar Backtest"} loading={run.isPending} onPress={() => run.mutate(undefined)} testID="bt-run-button" style={{ flex: 1.6 }} />
         </View>
       </View>
     </View>
@@ -285,7 +334,10 @@ const useStyles = makeStyles((c) => ({
   tradePnl: { fontFamily: fonts.display, fontSize: 15 },
   optCard: { marginHorizontal: 16, marginBottom: 12, borderColor: c.brandSecondary, gap: 8 },
   optTitle: { color: c.brandPrimary, fontFamily: fonts.displaySemi, fontSize: 13, letterSpacing: 1, textTransform: "uppercase" },
-  optBest: { color: c.onSurface, fontFamily: fonts.display, fontSize: 18 },
-  optRow: { gap: 2 },
+  optLine: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, borderTopWidth: 1, borderTopColor: c.divider },
+  optTf: { width: 34, color: c.brandPrimary, fontFamily: fonts.display, fontSize: 15 },
+  optBestSm: { color: c.onSurface, fontFamily: fonts.displaySemi, fontSize: 14 },
+  optApply: { height: 44, paddingHorizontal: 12, borderRadius: 999, borderWidth: 1, borderColor: c.borderStrong, justifyContent: "center" },
+  optApplyText: { color: c.onSurface, fontFamily: fonts.displaySemi, fontSize: 13 },
   sticky: { paddingHorizontal: 16, paddingTop: 12, borderTopWidth: 1, borderTopColor: c.border, backgroundColor: c.surface },
 }));

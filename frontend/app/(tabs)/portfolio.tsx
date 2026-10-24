@@ -14,7 +14,7 @@ import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type Pos = {
   position_id: string; symbol: string; display: string; side: "BUY" | "SELL"; qty: number; entry: number; price?: number; exit?: number;
-  pnl: number; pnl_pct?: number; decimals: number; stop_loss?: number; take_profit?: number; reason?: string; source?: string;
+  pnl: number; pnl_pct?: number; decimals: number; stop_loss?: number; take_profit?: number; reason?: string; source?: string; tf?: string;
 };
 type Portfolio = { balance: number; equity: number; unrealized: number; realized: number; start_balance: number; win_rate: number; positions: Pos[]; history: Pos[] };
 
@@ -136,7 +136,7 @@ export default function PortfolioScreen() {
                     </Text>
                     {item.source === "bot" && (
                       <View style={styles.demoTag}>
-                        <Text style={styles.demoText}>ROBÔ</Text>
+                        <Text style={styles.demoText}>ROBÔ{item.tf ? ` ${item.tf.toUpperCase()}` : ""}</Text>
                       </View>
                     )}
                   </View>

@@ -14,7 +14,7 @@ import { CATEGORIES, Category } from "@/src/markets";
 
 type Signal = {
   symbol: string; display: string; name: string; direction: "BUY" | "SELL" | "NEUTRAL"; entry: number; stop_loss: number;
-  take_profit: number; decimals: number; confidence: number; triggered: { label: string; dir: number }[]; trend: string; rsi: number;
+  take_profit: number; decimals: number; confidence: number; triggered: { label: string; dir: number }[]; trend: string; rsi: number; htf: string | null; htf_trend: number | null;
 };
 const TFS = [
   { value: "1m", label: "1m" },
@@ -86,6 +86,7 @@ export default function Signals() {
                     <Text style={styles.sym}>{item.display}</Text>
                     <Text style={styles.name}>
                       Tendência {item.trend} · RSI {item.rsi}
+                      {item.htf ? ` · ${item.htf.toUpperCase()} ${item.htf_trend === 1 ? "alta" : item.htf_trend === -1 ? "baixa" : "lateral"}` : ""}
                     </Text>
                   </View>
                   <SideBadge dir={item.direction} />

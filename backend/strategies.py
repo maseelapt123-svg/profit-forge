@@ -1,6 +1,7 @@
 """Indicators, Smart Money Concepts detection, strategy plugins and backtest engine."""
 import numpy as np
 import pandas as pd
+from typing import Optional
 
 PLUGIN_DEFAULTS = {
     "smc": {"enabled": True, "swing": 3},
@@ -156,38 +157,69 @@ def trend_filtered(df: pd.DataFrame, sig: np.ndarray) -> np.ndarray:
     return np.where(sig == trend, sig, 0)
 
 
-def run_backtest(df, strategy, plugins, sl_atr=1.5, rr=2.0, risk_pct=1.0, capital=10000.0, fee=0.0005,
-                 trend_filter=True, breakeven=True):
-    sig = strategy_signals(df, strategy, plugins)
+def htf_trend(df: pd.DataFrame, htf: pd.DataFrame) -> np.ndarray:
+    """Higher-timeframe trend (+1/-1/0) aligned to df bars using only CLOSED HTF candles (no look-ahead).
+    Bullish = HTF close above EMA50 and EMA50 above EMA200 (bearish the inverse); otherwise 0 (no trade)."""
+    c = htf["close"]
+    e50, e200 = ema(c, 50), ema(c, 200)
+    t = pd.Series(np.where((c > e50) & (e50 > e200), 1, np.where((c < e50) & (e50 < e200), -1, 0)), index=htf.index)
+    # an HTF bar is only known once it closes -> shift by one bar, then map onto lower-TF timestamps
+    t = t.shift(1)
+    aligned = t.reindex(t.index.union(df.index)).ffill().reindex(df.index)
+    return aligned.fillna(0).to_numpy()
+
+
+def mtf_filtered(df: pd.DataFrame, sig: np.ndarray, htf: Optional[pd.DataFrame]) -> np.ndarray:
+    if htf is None or htf.empty:
+        return sig
+    t = htf_trend(df, htf)
+    return np.where(sig == t, sig, 0)
+
+
+def apply_filters(df, sig, strategy, trend_filter, mtf, htf):
     if trend_filter and strategy != "combo":
         sig = trend_filtered(df, sig)
+    if mtf:
+        sig = mtf_filtered(df, sig, htf)
+    return sig
+
+
+def run_backtest(df, strategy, plugins, sl_atr=1.5, rr=2.0, risk_pct=1.0, capital=10000.0, fee=0.0005,
+                 trend_filter=True, breakeven=True, mtf=False, htf=None):
+    sig = strategy_signals(df, strategy, plugins)
+    sig = apply_filters(df, sig, strategy, trend_filter, mtf, htf)
     return simulate(df, sig, sl_atr, rr, risk_pct, capital, fee, breakeven)
 
 
-def optimize(df, plugins, fee, risk_pct=1.0, capital=10000.0, split=0.7):
+def optimize(df, plugins, fee, risk_pct=1.0, capital=10000.0, split=0.7, htf=None):
     """Walk-forward search: choose params on the first 70% (treino), validate on the unseen last 30% (teste)."""
     cut = int(len(df) * split)
     train, test = df.iloc[:cut], df.iloc[cut - 200:]  # warm-up bars for indicators
+    variants = [(True, False), (False, False)]
+    if htf is not None and not htf.empty:
+        variants += [(True, True), (False, True)]
     results = []
     for strat in list(PLUGIN_DEFAULTS.keys()) + ["combo"]:
-        for tfilt in (True, False):
+        raw_tr = strategy_signals(train, strat, plugins)
+        raw_te = strategy_signals(test, strat, plugins)
+        for tfilt, mtf in variants:
             if strat == "combo" and not tfilt:
                 continue
-            s_tr = strategy_signals(train, strat, plugins)
-            s_te = strategy_signals(test, strat, plugins)
-            if tfilt and strat != "combo":
-                s_tr, s_te = trend_filtered(train, s_tr), trend_filtered(test, s_te)
+            s_tr = apply_filters(train, raw_tr, strat, tfilt, mtf, htf)
+            s_te = apply_filters(test, raw_te, strat, tfilt, mtf, htf).copy()
             s_te[:200] = 0
+            if np.count_nonzero(s_tr) < 8:
+                continue
             for sl in (1.0, 1.5, 2.0, 3.0):
                 for rr in (1.5, 2.0, 3.0):
                     tr = simulate(train, s_tr, sl, rr, risk_pct, capital, fee, True)["metrics"]
                     if tr["total_trades"] < 8:
                         continue
                     te = simulate(test, s_te, sl, rr, risk_pct, capital, fee, True)["metrics"]
-                    results.append({"strategy": strat, "trend_filter": tfilt, "sl_atr": sl, "rr": rr, "train": tr, "test": te})
+                    results.append({"strategy": strat, "trend_filter": tfilt, "mtf": mtf, "sl_atr": sl, "rr": rr, "train": tr, "test": te})
     # score: train profit factor & return, then require out-of-sample confirmation
     results.sort(key=lambda r: (r["train"]["profit_factor"] > 1, r["train"]["return_pct"] / (1 + r["train"]["max_drawdown"])), reverse=True)
-    top = results[:30]
+    top = results[:40]
     validated = [r for r in top if r["test"]["return_pct"] > 0 and r["test"]["profit_factor"] > 1 and r["train"]["return_pct"] > 0 and r["test"]["total_trades"] >= 5]
     validated.sort(key=lambda r: r["test"]["return_pct"] + r["train"]["return_pct"], reverse=True)
     return {"best": validated[0] if validated else None, "candidates": (validated or top)[:8], "tested": len(results)}
