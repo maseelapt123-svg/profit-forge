@@ -1,0 +1,51 @@
+{
+  "summary": "Iteration 2 retest of the iteration-1 fixes only. Backend: 13 of 15 pytest checks passed, and 2 manual probes passed (concurrent bot/run lock, background SL/TP close for a user with no bot). Frontend (mobile 390x844, public URL): all 10 fixes checked and working. That covers the backtest skipped note, the results header showing the TF that ran, the optimizer card (title, clearing on asset/TF change, per-asset 'Usar no Robô'), the Bot overrides list with remove buttons, the two-tap portfolio reset and the chart axis labels. Both failures come from one new issue in PUT /api/bot overrides validation: sl_atr/rr are not checked (bad strings give 500, out-of-range values are saved). No deprecated Expo packages were checked or found in the reviewed files.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/bot", "issue": "overrides.{sym}.sl_atr/rr not validated: a non-numeric value ('abc') causes a ValueError and a 500 (server.py:732, float(v.get('sl_atr'))). Out-of-range values (sl_atr=50, rr=-1) are accepted and saved, although the general config limits them with Field(ge=0.5, le=5) / (ge=0.5, le=6)."},
+      {"endpoint": "PUT /api/plugins", "issue": "The ema_cross fast<slow and rsi oversold<overbought checks fall back to the defaults (9/21, 30/70) when the payload sends only one side, not to the stored value. Example: sending only fast=30 is rejected even if the stored slow is 50. The frontend always sends both, so this is low impact."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Bot", "issues": ["Removing an override (bot-override-remove-{sym}) only changes local state. Nothing tells the user that 'Guardar Configuração' is needed to persist it, and the server still holds the override until save.", "The cfg form is filled from the query only once (if !cfg), so the 15s refetch never refreshes the form fields."]},
+      {"screen": "Chart", "issues": ["Y-axis labels use raw '.' decimals (80142.56) while the header uses PT format (80 702,46). This is a small inconsistency."]},
+      {"screen": "Backtest", "issues": ["The optimizer 'Teste' line is always green (colors.success hardcoded, backtest.tsx:168). Fine while best is profitable, but it would mislead if a negative test result is ever shown."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iter2_fixes.py", "/app/backend/tests/manual_bot_lock_probe.py", "/app/backend/tests/manual_bg_sltp_probe.py", "/app/test_reports/pytest/pytest_iter2.xml"],
+  "action_items": [
+    "PUT /api/bot: validate overrides sl_atr (0.5-5) and rr (0.5-6) as numbers and return 400 for bad values, e.g. with a pydantic OverrideIn model with Field limits, not raw float().",
+    "Bot screen: auto-save when an override is removed, or show a hint that a save is needed.",
+    "Optional: PUT /api/plugins cross-field checks should fall back to stored values, not defaults."
+  ],
+  "critical_code_review_comments": [
+    "server.py:732: float() on unvalidated user input gives a 500. Use a typed pydantic model for overrides.",
+    "server.py:733: overrides for symbols not in `symbols` are silently dropped (by design). The frontend sendToBot adds the symbol, so this is OK."
+  ],
+  "verified_working": [
+    "POST /api/orders ZZZ returns 404. A second order that would push total notional over 10x balance returns 400 'alavancagem'.",
+    "PUT /api/plugins returns 400 for rsi length -5, ema fast>=slow, oversold>=overbought and non-numeric values. Valid values are saved.",
+    "POST /api/bot/run returns 400 'Ativa o robô primeiro' when the bot is disabled. The UI shows this as a toast.",
+    "Lock: 5 concurrent /bot/run calls gave opened [0,0,0,1,0] with no duplicate bot positions per symbol.",
+    "Overrides are saved per symbol and the general tf/strategy stay unchanged. An invalid override tf returns 400.",
+    "Backtest BTC-USD 1m smc: metrics.skipped_cost=187 and the bt-skipped-note is visible.",
+    "Signals: every BUY has trend 'alta' and every SELL has trend 'baixa'.",
+    "The background loop closed a manual position (SL hit simulated) within ~5s while the bot was disabled.",
+    "Optimizer card title 'ETH/USD 4H · 132 combinações'. The card clears on TF change. opt-bot-button added the ETH-USD override (4h bollinger) and the ETH-USD symbol, with general 1h/smc unchanged.",
+    "The Bot screen shows bot-overrides with a 44x44 remove button. Remove followed by save cleared the overrides on the server.",
+    "reset-account-button: the first tap shows the confirm text, which goes back after 4s. Two taps reset the account (1 to 0 open positions, toast shown).",
+    "Chart axis labels (BTC, EURUSD) sit fully inside the SVG bounds with no clipping."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter2_fixes.py", "/app/backend/tests/manual_bot_lock_probe.py", "/app/backend/tests/manual_bg_sltp_probe.py"],
+  "success_rate": {"backend": "87% (13/15 pytest; 2 probes passed; the 2 failures are a new override-validation finding)", "frontend": "100% of requested fixes"},
+  "seed_data_creation": "None persistent. The test user was restored to: bot disabled, symbols [BTC-USD, EURUSD=X], 1h smc, no overrides, plugins at defaults, portfolio reset.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "backend pytest.ini adds xdist (-n). Use -n 0 to run serially, because the tests share user_test1 state. Env var: EXPO_PUBLIC_BACKEND_URL. To test the bot lock, run tests/manual_bot_lock_probe.py. It loops strategies until a signal fires. Because of last_bar dedupe, a symbol only fires once per closed bar.",
+  "rca_of_issue": "Override sl_atr 'abc' -> 500: bot_put builds the overrides with float(v.get('sl_atr', 1.5)) on Dict[str, Any] input, with no try/except or range check."
+}

@@ -1,0 +1,56 @@
+{
+  "summary": "Backend: 64/66 pytest passed (48/50 existing regression suite + 16/16 new iter1 feature tests). Markets, candles 1m/5m (bar step verified 60s/300s) with OB/FVG/structure, auth 401/200, plugins GET/PUT, signals 5m, backtest 1m/5m/1h with trend_filter/breakeven, walk-forward optimizer (BTC 1h -> best=null, EURUSD 1h -> RSI test +14.1% PF 1.55 56 trades, AAPL 1d -> MACD test +7.7% PF 2.59 14 trades — all satisfy best constraints), paper trading flow, bot GET/PUT(trend_filter)/run (opened source=bot positions with SL/TP, logs incl. 'stop demasiado curto' skip), background loop verified (last_run advanced while enabled), AI SSE (gpt-5.4 streams chunks then [DONE]). SMC BTC-USD 1h with trend filter+BE = +21.5% (PF 1.19, 172 trades) vs -8.5% unfiltered (previously -23%). Frontend (390x844): login via localStorage, Markets tabs, chart TF 1m/5m, overlay chips, AI analysis renders, buy sheet places order (persisted), Signals TF chips incl 1m/5m, plugins modal toggle+save persisted, Backtest option chips, Otimizar (opt-none and opt-best states), Aplicar (re-runs backtest with optimizer params — request body verified), Usar no Robô (server bot updated, bot screen shows new values), Bot screen toggle/trend filter/TF/save/run now/logs/back, Portfolio ROBÔ tags, close position, Histórico tab, reset. No red screens, no page errors. 2 backend failures + several logic/UX issues listed below.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/orders", "issue": "Unknown symbol (e.g. ZZZ) returns 502 'Preço indisponível' (Cloudflare replaces body with HTML 502 page). Should validate symbol in ASSET_INFO and return 404/400. Same pattern in POST /positions/{id}/close. server.py:504-506"},
+      {"endpoint": "PUT /api/plugins", "issue": "No range validation of plugin params: rsi.length=-5 (or 0) accepted and persisted; can break indicator computation for signals/backtest/bot. server.py:261-267 — add min/max per param (PLUGIN_META)."},
+      {"endpoint": "POST /api/bot/run", "issue": "Opens trades even when bot.enabled=false (manual 'Verificar sinais agora' bypasses the switch). Confirm intended; otherwise guard or label clearly."},
+      {"endpoint": "POST /api/backtest (tf=1m, crypto)", "issue": "BTC-USD 1m returns 0 trades because every setup is skipped by the 'stop < 8*fee*price' rule (crypto fee too high for 1m ATR). Response has no reason field so UI just shows 0 trades/0%. Return a skipped_count / note so the UI can explain."},
+      {"endpoint": "bot cycle concurrency", "issue": "run_bot_cycle can run concurrently from background loop and POST /bot/run; last_bar dedupe is read from a stale dict, so the same bar may open duplicate positions in a race. Consider a per-user asyncio.Lock."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Backtest optimizer card", "issue": "opt results are not tied to the symbol/tf they were computed for: card does not show the asset/tf, is not cleared when the user changes asset/tf chips, and Aplicar / Usar no Robô use the CURRENT symbol/tf state (backtest.tsx:86-98) — e.g. optimize EURUSD 1h, tap GBPUSD, Usar no Robô adds GBPUSD with EURUSD params. Use opt.data.symbol/opt.data.tf or reset opt on change.", "testID": "opt-results", "priority": "MEDIUM"},
+      {"component": "Backtest results header", "issue": "Header label uses current tf state ({tf.toUpperCase()}) instead of r.tf, so changing TF chip after a run mislabels the results. backtest.tsx:186", "testID": "bt-results", "priority": "LOW"},
+      {"component": "Backtest 0-trade result", "issue": "1m crypto backtest shows 0 trades / +0% with no explanation (stops too tight vs fees). Show a hint.", "testID": "bt-trades", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "Usar no Robô", "issue": "Bot config is global (one strategy/tf/params for all symbols). Using the optimizer result for one asset overwrites tf/strategy/params applied to every other bot symbol (verified: BTC-USD now trades with EURUSD-optimized RSI 1x/1.5 and tf changed 4h->1h). Warn user or support per-symbol configs.", "affected_testIDs": ["opt-bot-button", "bot-assets"]}
+    ],
+    "design_issues": [
+      {"screen": "Chart", "issues": ["Top/bottom price-axis labels are clipped/overlapped (top label cut at chart edge; bottom label overlapped by area below); current-price tag overlaps an axis label."]},
+      {"screen": "Portfolio", "issues": ["'Repor conta simulada' resets the whole account (positions, history, bot logs) with one tap and no confirmation dialog."]},
+      {"screen": "Signals", "issues": ["Signals ignore the EMA200 trend filter (e.g. 'Tendência alta' + VENDA cards) while backtest/bot apply it by default — inconsistent with the strategy the user is backtesting."]},
+      {"screen": "Bot", "issues": ["Toggling the enable Switch immediately saves ALL unsaved edits in the form (tf, trend filter, etc.) — may surprise users; acceptable but consider documenting."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_trading_api.py", "/app/backend/tests/test_bot_api.py", "/app/backend/tests/test_iter1_features.py", "/app/test_reports/pytest/pytest_existing.xml", "/app/test_reports/pytest/pytest_iter1.xml"],
+  "action_items": [
+    "POST /api/orders (and close): validate symbol -> 404 instead of 502",
+    "PUT /api/plugins: enforce numeric ranges for plugin params (reject length<=0 etc.)",
+    "Backtest optimizer: store symbol/tf with opt result, show it in the card, clear on asset/tf change, use opt.data.symbol/tf in Aplicar/Usar no Robô",
+    "Backtest header: use r.tf not tf state",
+    "Return/display reason when backtest has 0 trades due to cost filter (esp. 1m crypto)",
+    "Add confirm dialog before portfolio reset",
+    "Decide whether /bot/run should work when bot disabled; add per-user lock around run_bot_cycle",
+    "Consider per-symbol bot params or warn that 'Usar no Robô' changes global bot config",
+    "Minor: chart axis label clipping"
+  ],
+  "critical_code_review_comments": [
+    "Paper account has no margin accounting: each order only checks notional <= 10x balance, so unlimited stacked positions are possible (bot: up to max_positions x 10x).",
+    "Manual positions SL/TP only auto-close when GET /portfolio is called or when the user's bot loop runs (check_exits) — users without enabled bot never get server-side SL/TP execution.",
+    "Signal SL/TP in build_signal always uses 1.5 ATR / 2R regardless of user/bot settings.",
+    "Optimizer always uses breakeven=True; candidates don't include breakeven flag (frontend hardcodes setBreakeven(true)) — consistent but implicit.",
+    "Existing pytest files read EXPO_PUBLIC_BACKEND_URL (frontend/.env key) — export it before running; pytest.ini adds -n/xdist."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter1_features.py"],
+  "success_rate": {"backend": "97% (64/66)", "frontend": "~95% (all requested flows work; minor logic/UX issues)"},
+  "seed_data_creation": "None persistent. Created test orders/bot positions for user_test1 then POST /api/portfolio/reset; bot restored to disabled smc 1h [BTC-USD, ETH-USD, EURUSD=X]; plugins restored to defaults.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: export EXPO_PUBLIC_BACKEND_URL=<frontend/.env value>; cd /app/backend && python -m pytest tests/ -o addopts='' -q. Bot opens trades readily on 5m/15m with rsi/ema_cross and trend_filter=false across many symbols. Optimizer: EURUSD=X 1h and AAPL 1d return best; BTC-USD 1h returns best=null. Selectors: segments use `${testID}-${value}` (e.g. chart-tf-5m, bt-category-forex, bt-options-trend, bot-trend-filter-trend).",
+  "rca_of_issue": "Order 502: place_order calls quote(symbol) which returns None for unknown symbols -> HTTPException(502); ingress/Cloudflare then masks the JSON with an HTML 502 page. Fix: check `body.symbol in ASSET_INFO` first and raise 404."
+}

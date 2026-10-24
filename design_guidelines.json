@@ -1,0 +1,190 @@
+{
+  "app_name": "SmartTrade AI",
+  "personality": "7 Dark-First Utility",
+  "personality_one_liner": "A high-performance command center for trading, designed for fast scanning and tactical precision.",
+  "color": {
+    "surface": "#101113",
+    "onSurface": "#F4F4F5",
+    "surfaceSecondary": "#1C1C1E",
+    "onSurfaceSecondary": "#A1A1AA",
+    "surfaceTertiary": "#27272A",
+    "onSurfaceTertiary": "#E4E4E7",
+    "surfaceInverse": "#FAFAFA",
+    "onSurfaceInverse": "#101113",
+    "brand": "#EA580C",
+    "brandPrimary": "#EA580C",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#C2410C",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#7C2D12",
+    "onBrandTertiary": "#FFEDD5",
+    "success": "#10B981",
+    "onSuccess": "#FFFFFF",
+    "warning": "#F59E0B",
+    "onWarning": "#FFFFFF",
+    "error": "#EF4444",
+    "onError": "#FFFFFF",
+    "info": "#3B82F6",
+    "onInfo": "#FFFFFF",
+    "border": "#27272A",
+    "borderStrong": "#3F3F46",
+    "divider": "#27272A",
+    "muted": "#71717A",
+    "onBrand": "#FFFFFF"
+  },
+  "typography": {
+    "displayFontFamily": "Rajdhani",
+    "textFontFamily": "IBM Plex Sans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Dense and structural. Use tight margins (md: 12) to allow high information density. Rely on tonal separation and borders instead of shadows.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "0",
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": "false",
+    "do's": [
+      "Use solid surfaceSecondary and surfaceTertiary for data-dense screens to prioritize clarity and speed."
+    ],
+    "dont's": [
+      "Avoid glassmorphism on dense data screens, charts, or operational dashboards as it introduces visual noise."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Mercados (Watchlist)",
+      "purpose": "A live view of crypto, forex, and stocks with real-time price updates.",
+      "states": {
+        "loading": "Centered spinner using brandPrimary color.",
+        "empty": "Illustration of an empty chart, text 'Nenhum ativo na watchlist', CTA 'Adicionar Ativos'.",
+        "error": "Text 'Falha ao carregar mercados', 'Tentar Novamente' button."
+      },
+      "layout": "Header with title 'Mercados' and search icon. A segmented control (Cripto | Forex | Ações) below the header. A flat list of rows. Each row: Left side has the asset logo (real PNG) and Symbol/Name; right side has the current price and a percentage change pill (Green for positive, Red for negative). Tapping a row pushes the Chart screen. Use strict structural borders between rows."
+    },
+    {
+      "name": "Chart & Negociação (Pushed Screen)",
+      "purpose": "Candlestick chart with Smart Money overlays and order execution sheet.",
+      "states": {
+        "loading": "Skeleton view of chart axes.",
+        "empty": "N/A",
+        "error": "Error loading chart data."
+      },
+      "layout": "Full-screen layout. Top bar: Asset symbol, current price. Main area: Candlestick chart. A horizontal scrollable chip row below the chart to toggle SMC overlays (Order Blocks, FVG, BOS). Bottom: A sticky container with two massive pill buttons: 'Comprar' (Green) and 'Vender' (Red), which opens a bottom sheet to enter order details (Paper trading)."
+    },
+    {
+      "name": "Sinais AI",
+      "purpose": "Feed of AI-generated Smart Money trading signals.",
+      "states": {
+        "loading": "Skeleton cards.",
+        "empty": "No signals available at the moment.",
+        "error": "Failed to fetch signals."
+      },
+      "layout": "Header with 'Sinais' and a Settings icon to access 'Plugins'. List of signal cards. Each card: Header with Asset Symbol and 'COMPRA' (Green) or 'VENDA' (Red) badge. Body includes AI analysis text ('Entry at X, Stop Loss Y, Target Z')."
+    },
+    {
+      "name": "Plugins de Estratégia (Settings Modal)",
+      "purpose": "Enable and configure algorithmic plugins.",
+      "states": {
+        "loading": "Skeleton rows.",
+        "empty": "N/A",
+        "error": "N/A"
+      },
+      "layout": "A stacked list of toggleable plugins (SMC, RSI, EMA Cross, MACD, Bollinger). When a switch is active, a sub-form expands with parameter inputs (e.g., RSI Length, EMA fast/slow). Sticky 'Guardar Configurações' CTA at the bottom."
+    },
+    {
+      "name": "Backtest",
+      "purpose": "Configure and run a strategy backtest and view results.",
+      "states": {
+        "loading": "Running simulation progress bar.",
+        "empty": "Select parameters to run a backtest.",
+        "error": "Simulation failed."
+      },
+      "layout": "Two-tab or two-section scrollable view. Configuration: Dropdowns for Strategy, Asset, Timeframe. A massive sticky 'Executar Backtest' CTA at the bottom. Once executed, Results section appears showing an Equity Curve chart, and a grid of performance metrics (Win Rate, Profit Factor, Drawdown, Total Trades) using monospace typography (Rajdhani)."
+    },
+    {
+      "name": "Portfólio",
+      "purpose": "Manage paper trading portfolio, balance, and history.",
+      "states": {
+        "loading": "Skeleton of balance.",
+        "empty": "No active trades. 'Ir para Mercados' CTA.",
+        "error": "Failed to load portfolio."
+      },
+      "layout": "Hero card at the top displaying Total Balance ($) and daily P&L. Below it, a segmented control (Posições Abertas | Histórico). List of active trades with current profit/loss and a 'Fechar' (Close) button."
+    },
+    {
+      "name": "Login (Google)",
+      "purpose": "Google OAuth sign-in screen.",
+      "states": {
+        "loading": "Spinner during auth.",
+        "empty": "N/A",
+        "error": "Authentication failed."
+      },
+      "layout": "Cinematic dark background with a subtle brandTertiary gradient at the top. Large SmartTrade AI logo/wordmark. A solid white 'Entrar com Google' button anchored at the bottom with a Google icon. No other distractions."
+    }
+  ],
+  "images": {
+    "login_bg": {
+      "url": "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2Mzl8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMGRhcmslMjBmaW5hbmNpYWwlMjBtYXJrZXQlMjBjaGFydCUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzkyODAzMDA4fDA&ixlib=rb-4.1.0&q=85",
+      "alt": "abstract dark financial market chart background"
+    },
+    "btc_logo": {
+      "url": "https://images.unsplash.com/photo-1609554496796-c345a5335ceb?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODh8MHwxfHNlYXJjaHwyfHxiaXRjb2luJTIwbG9nbyUyMHRyYW5zcGFyZW50fGVufDB8fHx8MTc5MjgwMzAyN3ww&ixlib=rb-4.1.0&q=85",
+      "alt": "bitcoin logo transparent"
+    },
+    "eth_logo": {
+      "url": "https://images.unsplash.com/photo-1590286162167-70fb467846ae?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwxfHxldGhlcmV1bSUyMGxvZ28lMjB0cmFuc3BhcmVudHxlbnwwfHx8fDE3OTI4MDMwMjd8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "ethereum logo transparent"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Adhere strictly to the '7 Dark-First Utility' personality. Use sharp structural borders instead of shadows.",
+    "Do NOT use pure black backgrounds. The primary background is #101113. Use surfaceSecondary (#1C1C1E) for cards and lists.",
+    "Do NOT use blue or purple anywhere. The primary brand color is Orange/Rust (#EA580C).",
+    "Use Rajdhani for headings, metrics, numbers, and display text. Use IBM Plex Sans for body text.",
+    "For the Chart screen and Backtest Results, rely on monospace styling for numbers to ensure alignment and readability.",
+    "When displaying asset lists, use real PNGs (provided in images, or use image selector) instead of placeholder icons.",
+    "Ensure the 'Executar Backtest' and 'Comprar/Vender' buttons are massive and sticky at the bottom, within safe areas.",
+    "Text over the login background image MUST have a top-to-bottom vertical linear gradient scrim (transparent to surface color at >=70% opacity) for readability.",
+    "All UI text must be in Portuguese (pt-PT)."
+  ],
+  "haptics": {
+    "tab_press": "light",
+    "button_press": "medium",
+    "buy_sell_execute": "heavy",
+    "plugin_toggle": "light",
+    "segment_change": "light"
+  }
+}
