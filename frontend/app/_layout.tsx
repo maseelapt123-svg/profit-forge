@@ -30,6 +30,14 @@ function Gate() {
         <Stack.Screen name="chart/[symbol]" />
         <Stack.Screen name="plugins" options={{ presentation: "modal" }} />
         <Stack.Screen name="bot" />
+        <Stack.Screen name="signals" />
+        <Stack.Screen name="tools" />
+        <Stack.Screen name="patterns" />
+        <Stack.Screen name="calculator" />
+        <Stack.Screen name="hfx-bot" />
+        <Stack.Screen name="hfx-plugins" />
+        <Stack.Screen name="hfx-optimizer" />
+        <Stack.Screen name="analysis" />
       </Stack.Protected>
       <Stack.Protected guard={!user}>
         <Stack.Screen name="login" />

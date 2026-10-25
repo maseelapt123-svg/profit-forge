@@ -1,0 +1,43 @@
+{
+  "summary": "Tested the auto_fix persistence bug fix, the ai_filter config on both bots, the AI loss-review SSE endpoint (hfx + bot scopes, with seeded data), the ai.ai_filter helper (real LLM + fail-closed), the live HFX bot AI-filter integration, and the UI on /analysis (Coach IA), /hfx-bot (Filtro IA switch), /bot (Filtro IA chip) and /chart/BTC-USD (regression). Backend: 16/16 pytest pass. Auto-fix bug is FIXED: verified by API and by the UI flow (toggle off on /analysis, save on /hfx-bot, auto_fix stays false, /analysis switch still off). The HFX bot with ai_filter on logged real 'ai' rejections ('IA rejeitou HFX PUT USD/CAD OTC: ...'). No approved entry was seen in about 5 minutes. The main-bot ai_filter path was only code-reviewed: /bot/run gave no signal. Coach IA streams progressively (0→155→...→1788 chars over ~10s). The text persists and reloads after a scope switch. Switching scope resets the card. Separately, I found and fixed a 500 on POST /api/auth/session: a DuplicateKeyError when the same session_token is inserted twice.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/auth/session", "issue": "Returned 500 (pymongo DuplicateKeyError on user_sessions.session_token_1) when the same Emergent session is exchanged twice. Seen in backend.out.log. FIXED by testing agent: insert_one changed to update_one(upsert=True)."},
+      {"endpoint": "hfx.run_bot ai_filter", "issue": "The AI call (up to 15s timeout, run one pair after another) happens AFTER the 'act only on the candle that just closed (<=20s)' check. A 1-minute option can therefore open up to ~35s late. With 8 pairs, AI calls can also take longer than the 60s loop and skip bars. Suggest running the filter calls for all pairs in parallel (asyncio.gather), re-checking freshness after the AI call, or using a shorter timeout (~6s) for HFX."},
+      {"endpoint": "POST /api/ai/loss-review", "issue": "The prompt passes raw internal keys (fixes / ctx: trend_align, skip_low_vol, vol_pct, htf_aligned). The LLM echoes them to the user in backticks, e.g. 'trend_align=false, skip_low_vol=false'. It also once used '€10' although the app uses $. Suggest mapping keys to Portuguese labels in review_prompt and stating the currency."},
+      {"endpoint": "GET /api/bot", "issue": "The bot doc returns user_id. HFX GET pops it; the main bot GET does not."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "AiReview error toast", "issue": "When there are fewer than 3 trades, the backend's 400 'Poucas operações fechadas para a IA analisar (mínimo 3)' is lost. streamSSE throws a generic ApiError(res.status, 'Falha na análise IA') without reading the response body, so the user sees only 'Falha na análise IA'. Fix: on !res.ok, parse res.json().detail. Reference: /app/frontend/src/api.ts:66", "testID": "ai-review-button", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/analysis", "issues": ["Coach IA 'Explicar perdas' button is active even with 0 operations; consider disabling it or showing a hint when trades < 3", "Raw markdown backticks (`...`) appear in the AI text: MarkdownLite does not strip inline code (src/components/markdown.tsx)", "The error toast renders at the top over the header title (overlaps 'Análise de Perdas')"]},
+      {"screen": "/bot", "issues": ["The filter ChipRow (EMA200 / TF superior / ✨ Filtro IA) has no section label, unlike Estratégia/Timeframe. On 375px the Filtro IA chip sits at the right edge of a horizontal scroll and is easy to miss", "Chips are 36px tall (<44 touch target)"]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iter7_ai_features.py", "/app/backend/tests/manual_seed_ai_review.py", "/app/test_reports/pytest/pytest_iter7.xml"],
+  "action_items": [
+    "streamSSE: surface the backend 'detail' on non-2xx (e.g. 'Poucas operações...') instead of the generic 'Falha na análise IA' (src/api.ts:66)",
+    "HFX ai_filter timing: run the AI checks in parallel or with a shorter timeout, and re-check bar freshness after the AI decision, so 1m entries are not late",
+    "review_prompt: translate fix/ctx keys into human Portuguese labels and state the $ currency; strip backticks in MarkdownLite",
+    "Optional: disable the Coach IA button or show a hint when the scope has fewer than 3 closed trades; add a section label for the filter chips on /bot",
+    "Pop user_id from the GET /api/bot response"
+  ],
+  "critical_code_review_comments": [
+    "ai.ai_filter fails closed correctly (verified with timeout=0.01 → approve False, 'IA indisponível...')",
+    "ai_filter adds one LLM call per signal; with a strict risk-manager prompt the AI rejected 2/2 observed signals ('estatística ainda fraca'). Users may see the bot almost never trade; consider showing an approval-rate stat",
+    "server.py is 1107 lines and hfx.py 866: both exceed 700 lines and should be split into modules"
+  ],
+  "updated_files": ["/app/backend/server.py (auth_session: idempotent upsert of user_sessions)", "/app/backend/tests/test_iter7_ai_features.py (new)", "/app/backend/tests/manual_seed_ai_review.py (new)"],
+  "success_rate": {"backend": "100% (16/16)", "frontend": "100% of requested flows work; 1 medium UX bug (error message)"},
+  "seed_data_creation": "Temporarily seeded 6 TEST_ hfx_trades and 5 TEST_ bot positions; all removed. ai_reviews for user_test1 cleared (they were generated from fake data).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Final state: HFX bot enabled=False, ai_filter=False, auto_fix=True, pairs=[EURUSD=X], min_winrate 56. Main bot enabled=False, ai_filter=False, auto_fix=True. Run test_iter7_ai_features.py (pytest.ini uses xdist; it passes in parallel). Use manual_seed_ai_review.py seed|clean [--reviews] for UI testing of Coach IA.",
+  "rca_of_issue": "auth/session 500: Emergent can return the same session_token for repeated exchanges of one session_id (React double effect or a retry). insert_one then violated the unique index session_token_1. Mitigation applied: update_one(..., upsert=True)."
+}

@@ -1,0 +1,46 @@
+{
+  "summary": "Tested only the new loss-analysis and auto-fix features plus the iteration_4 fixes. Backend: 12 of 13 pytest checks passed, using synthetic HFX trades and main-bot positions. HFX analysis returns problems for pair_rule, hour, against and low_vol. Bot analysis returns problems for setup, hour, against_htf and stops. apply/reset work for both, PUT /analysis/auto-fix works (invalid scope gives 400), and POST /hfx/analysis/apply returns 400 when no bot is configured. All iteration_4 fixes are confirmed: pairs source=foo gives 400, setup expiry 'abc' gives 400, enabling the bot after the daily stop is hit gives 400 with 'Limite diário', optimizer strength is forte|moderada, and /hfx/trades stats come from the aggregation. Live probe: the HFX bot ran on OTC with an hours fix set to the current hour. It logged 'HFX EUR/GBP OTC CALL ignorado pela correção automática: hora 10h bloqueada' and opened 0 trades. Frontend (375x667): /analysis opens from tool-analysis, open-analysis-button, bot-open-analysis and hfx-bot-open-analysis. The HFX and Robô principal scopes, stats, diagnosis cards, Corrigir Agora, Limpar, the auto-fix switch and recent losses all work. The optimizer shows 'VALIDADA · MODERADA' and 'Pior caso no teste'. The OTC warning shows only for optimized + otc. Opening hfx-plugins directly and saving goes to /hfx with no crash. One real bug: saving the HFX bot config silently turns auto-fix back on. No deprecated Expo packages found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/hfx/bot", "issue": "HfxBotIn.auto_fix defaults to True and body.model_dump() is written with $set. Any PUT that omits auto_fix, or sends a stale value, turns auto-fix back on after the user switched it off in /analysis. Reproduced by the test test_hfx_bot_put_preserves_auto_fix and in the UI (see integration_issues). Fix: remove auto_fix from HfxBotIn (it is managed by /analysis/auto-fix) or make it Optional and exclude it when None. Reference: /app/backend/hfx.py:347,836"},
+      {"endpoint": "GET /api/hfx/analysis", "issue": "An unknown scope (e.g. scope=foo) is silently treated as 'all' instead of returning 400."},
+      {"endpoint": "HFX run_bot", "issue": "auto_fix() writes new fixes to the DB, but blocked_by() later in the same cycle reads the old 'bot' dict. New fixes only take effect on the next minute's cycle. Reference: hfx.py:553-596"}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "analysis active fixes (HFX)", "issue": "Quarantine entries show the raw internal key, e.g. 'Em quarentena: EURUSD|TESTrule' (real data: 'EURUSD|bb_rsi+rsi2'). They should show the pair display name and the rule label.", "testID": "analysis-fix-<i>", "priority": "low"},
+      {"component": "analysis recent losses (bot)", "issue": "The raw reason 'stop_loss' is shown untranslated, and the amount is formatted as '$-10,00' (sign after the currency symbol).", "testID": "analysis-screen", "priority": "low"}
+    ],
+    "integration_issues": [
+      {"flow": "hfx-bot -> analysis -> toggle auto-fix OFF -> back -> Guardar Configuração", "issue": "hfx-bot.tsx keeps cfg (including auto_fix) in local state, and the analysis screen does not refresh it. Saving sends the stale auto_fix=true, so the user's OFF choice is lost. Verified in the UI: auto_fix went False, then True after save.", "affected_testIDs": ["analysis-auto-fix-switch", "hfx-bot-save-button"]},
+      {"flow": "bot-open-analysis (main bot screen)", "issue": "Opens /analysis on the HFX scope instead of 'Robô principal'. The scope is not passed as a param.", "affected_testIDs": ["bot-open-analysis", "analysis-scope-bot"]},
+      {"flow": "analysis HFX scope", "issue": "The screen loads /hfx/analysis?scope=all (manual + bot trades), but 'Corrigir Agora' only analyses bot trades. Problems caused by manual trades are shown but are never fixed, so the button can seem to do nothing.", "affected_testIDs": ["analysis-problem-<i>", "analysis-apply-button"]}
+    ],
+    "design_issues": [
+      {"screen": "analysis", "issues": ["The success toast covers the header and back button while it is visible."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iter6_loss_analysis.py", "/app/backend/tests/manual_hfx_fix_skip_probe.py", "/app/backend/tests/manual_seed_loss_analysis.py", "/app/test_reports/pytest/iter6.xml"],
+  "action_items": [
+    "Stop PUT /api/hfx/bot from overwriting auto_fix: remove it from HfxBotIn or exclude it when it is not set (hfx.py:347,836). Also invalidate or refresh the hfx-bot cfg after the auto-fix toggle.",
+    "Pass the scope to /analysis from bot.tsx (e.g. router.push('/analysis?scope=bot')) and read it with useLocalSearchParams.",
+    "Make the HFX diagnosis and 'Corrigir Agora' use the same set of trades (scope=bot), or label which problems come from manual trades and cannot be auto-fixed.",
+    "Show friendly labels for the HFX pair_rules fixes and for the bot loss reasons (stop_loss -> 'Stop'), and fix the negative money format.",
+    "Optional: return 400 for an invalid scope on /hfx/analysis; use the fresh fixes in the same HFX cycle."
+  ],
+  "critical_code_review_comments": [
+    "hfx.py is 843 lines and server.py is 1032 lines. Both are over the 700-line limit; split the analysis/auto-fix code into its own module.",
+    "Bot and HFX auto-fix only ever add quarantines. A paused setup or blocked hour never gets new trades, so it stays blocked for good. Consider an expiry or a re-test.",
+    "Optimizer 'VALIDADA · MODERADA' is shown even when the worst case (54,0%) is below the minimum to profit (54,9%). This matches the 'moderada' definition but may mislead users."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter6_loss_analysis.py", "/app/backend/tests/manual_hfx_fix_skip_probe.py", "/app/backend/tests/manual_seed_loss_analysis.py"],
+  "success_rate": {"backend": "92% (12/13)", "frontend": "90% (all flows work; 1 state bug, 1 nav-scope issue)"},
+  "seed_data_creation": "Synthetic hfx_trades and positions with ids prefixed TEST_ were seeded and then deleted. Restored state: hfx_bots/bots enabled=false, fixes={}, auto_fix=true; portfolio reset; 0 hfx_trades and 0 positions for user_test1. Some 'fix' and 'skip' entries remain in bot_logs.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The container clock is Oct 2026, a Sunday (forex closed, OTC works). Run backend/tests/test_iter6_loss_analysis.py with frontend/.env and backend/.env exported; it seeds and cleans up its own data with pymongo. pytest.ini uses xdist loadscope. Use manual_seed_loss_analysis.py seed|clean for UI data.",
+  "rca_of_issue": "auto_fix revert: hfx-bot.tsx sets cfg once from GET /hfx/bot. The analysis screen's mutation only invalidates ['analysis', scope]. Saving PUTs the whole stale cfg, and the backend $set includes model_dump()['auto_fix'], which overwrites the value set by /analysis/auto-fix."
+}

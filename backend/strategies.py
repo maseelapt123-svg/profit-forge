@@ -299,3 +299,77 @@ def simulate(df, sig, sl_atr=1.5, rr=2.0, risk_pct=1.0, capital=10000.0, fee=0.0
         "equity": [round(float(x), 2) for x in sampled],
         "trades": trades[-50:][::-1],
     }
+
+
+# ---------------------------------------------------------------- chart tools
+def vwap(df: pd.DataFrame, n: int = 50) -> pd.Series:
+    tp = (df["high"] + df["low"] + df["close"]) / 3
+    v = df["volume"].fillna(0)
+    if float(v.tail(n).sum()) <= 0:
+        return tp.rolling(n, min_periods=1).mean()
+    return (tp * v).rolling(n, min_periods=1).sum() / v.rolling(n, min_periods=1).sum().replace(0, np.nan)
+
+
+def sr_levels(df: pd.DataFrame, k: int = 5, max_levels: int = 6) -> list:
+    """Support/resistance from swing pivots, clustered within 0.5 ATR, ranked by touches."""
+    h, l = df["high"].to_numpy(), df["low"].to_numpy()
+    tol = float(atr(df).iloc[-1]) * 0.5
+    pts = []
+    for i in range(k, len(df) - k):
+        if h[i] == h[i - k:i + k + 1].max():
+            pts.append(h[i])
+        if l[i] == l[i - k:i + k + 1].min():
+            pts.append(l[i])
+    clusters: list = []
+    for p in sorted(pts):
+        if clusters and p - clusters[-1][-1] <= tol:
+            clusters[-1].append(p)
+        else:
+            clusters.append([p])
+    price = float(df["close"].iloc[-1])
+    lv = [{"price": float(np.mean(c)), "touches": len(c), "type": "support" if np.mean(c) < price else "resistance"} for c in clusters]
+    lv.sort(key=lambda x: -x["touches"])
+    return sorted(lv[:max_levels], key=lambda x: x["price"])
+
+
+def fib_levels(df: pd.DataFrame) -> dict:
+    hi_i, lo_i = int(df["high"].values.argmax()), int(df["low"].values.argmin())
+    hi, lo = float(df["high"].iloc[hi_i]), float(df["low"].iloc[lo_i])
+    up = lo_i < hi_i  # swing up -> retracements measured from the high down
+    levels = []
+    for r in (0, 0.236, 0.382, 0.5, 0.618, 0.786, 1):
+        p = hi - (hi - lo) * r if up else lo + (hi - lo) * r
+        levels.append({"ratio": r, "price": p})
+    return {"direction": "up" if up else "down", "levels": levels}
+
+
+PATTERN_LABELS = {
+    "bull_engulfing": "Engolfo de alta", "bear_engulfing": "Engolfo de baixa", "hammer": "Martelo",
+    "shooting_star": "Estrela cadente", "doji": "Doji", "bull_pin": "Pin bar de alta", "bear_pin": "Pin bar de baixa",
+    "inside_bar": "Inside bar",
+}
+
+
+def detect_patterns(df: pd.DataFrame, i: int) -> list:
+    o, h, l, c = (float(df[x].iloc[i]) for x in ("open", "high", "low", "close"))
+    po, ph, pl, pc = (float(df[x].iloc[i - 1]) for x in ("open", "high", "low", "close"))
+    rng = h - l
+    if rng <= 0:
+        return []
+    body = abs(c - o)
+    upper, lower = h - max(o, c), min(o, c) - l
+    trend_up = float(df["close"].iloc[i]) > float(ema(df["close"], 50).iloc[i])
+    out = []
+    if pc < po and c > o and c >= po and o <= pc:
+        out.append(("bull_engulfing", 1))
+    if pc > po and c < o and c <= po and o >= pc:
+        out.append(("bear_engulfing", -1))
+    if body / rng < 0.1:
+        out.append(("doji", 0))
+    elif lower >= 2 * body and upper <= body * 0.6:
+        out.append(("hammer" if not trend_up else "bull_pin", 1))
+    elif upper >= 2 * body and lower <= body * 0.6:
+        out.append(("shooting_star" if trend_up else "bear_pin", -1))
+    if h < ph and l > pl:
+        out.append(("inside_bar", 0))
+    return [{"pattern": p, "label": PATTERN_LABELS[p], "dir": d} for p, d in out]

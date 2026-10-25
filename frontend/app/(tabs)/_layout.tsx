@@ -15,9 +15,9 @@ export default function TabsLayout() {
           <NativeTabs.Trigger.Icon sf="chart.line.uptrend.xyaxis" />
           <NativeTabs.Trigger.Label>Mercados</NativeTabs.Trigger.Label>
         </NativeTabs.Trigger>
-        <NativeTabs.Trigger name="signals">
-          <NativeTabs.Trigger.Icon sf="bolt.fill" />
-          <NativeTabs.Trigger.Label>Sinais</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger name="hfx">
+          <NativeTabs.Trigger.Icon sf="timer" />
+          <NativeTabs.Trigger.Label>HFX</NativeTabs.Trigger.Label>
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="backtest">
           <NativeTabs.Trigger.Icon sf="clock.arrow.circlepath" />
@@ -51,7 +51,7 @@ export default function TabsLayout() {
       }}
     >
       <Tabs.Screen name="index" options={{ title: "Mercados", tabBarIcon: icon("stats-chart"), tabBarButtonTestID: "tab-markets" } as any} />
-      <Tabs.Screen name="signals" options={{ title: "Sinais", tabBarIcon: icon("flash"), tabBarButtonTestID: "tab-signals" } as any} />
+      <Tabs.Screen name="hfx" options={{ title: "HFX", tabBarIcon: icon("timer"), tabBarButtonTestID: "tab-hfx" } as any} />
       <Tabs.Screen name="backtest" options={{ title: "Backtest", tabBarIcon: icon("time"), tabBarButtonTestID: "tab-backtest" } as any} />
       <Tabs.Screen name="portfolio" options={{ title: "Portfólio", tabBarIcon: icon("briefcase"), tabBarButtonTestID: "tab-portfolio" } as any} />
     </Tabs>

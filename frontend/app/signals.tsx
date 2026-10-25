@@ -8,7 +8,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api, fmt } from "@/src/api";
 import { Button, Center, ChipRow, PressableScale, Segmented, SideBadge } from "@/src/components/ui";
-import { usesNativeTabs } from "@/src/navigation";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 import { CATEGORIES, Category } from "@/src/markets";
 
@@ -29,7 +28,7 @@ export default function Signals() {
   const [cat, setCat] = useState<Category>("crypto");
   const [tf, setTf] = useState("1h");
   const insets = useSafeAreaInsets();
-  const bottomChrome = usesNativeTabs ? insets.bottom : 0;
+  const bottomChrome = insets.bottom;
   const styles = useStyles();
   const { colors } = useTheme();
   const router = useRouter();
@@ -39,7 +38,10 @@ export default function Signals() {
     <View style={styles.root} testID="signals-screen">
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <View style={styles.titleRow}>
-          <View>
+          <Pressable testID="signals-back-button" onPress={() => router.back()} style={styles.back}>
+            <Ionicons name="chevron-back" size={22} color={colors.onSurface} />
+          </Pressable>
+          <View style={{ flex: 1 }}>
             <Text style={styles.title}>Sinais</Text>
             <Text style={styles.subtitle}>Consenso dos teus plugins ativos</Text>
           </View>
@@ -131,7 +133,8 @@ function Level({ label, value, color }: { label: string; value: string; color?: 
 const useStyles = makeStyles((c) => ({
   root: { flex: 1, backgroundColor: c.surface },
   header: { paddingHorizontal: 16 },
-  titleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  titleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 4 },
+  back: { width: 40, height: 44, alignItems: "flex-start", justifyContent: "center" },
   title: { color: c.onSurface, fontFamily: fonts.display, fontSize: 32 },
   subtitle: { color: c.muted, fontFamily: fonts.text, fontSize: 12 },
   iconBtn: { flexDirection: "row", alignItems: "center", gap: 6, height: 44, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: c.brandPrimary },

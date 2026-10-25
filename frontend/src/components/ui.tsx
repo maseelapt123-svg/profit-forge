@@ -156,7 +156,7 @@ const useStyles = makeStyles((c) => ({
   segActive: { backgroundColor: c.surfaceTertiary },
   segText: { color: c.muted, fontFamily: fonts.displaySemi, fontSize: 15 },
   segTextActive: { color: c.onSurface },
-  chipRow: { flexGrow: 0, height: 56 },
+  chipRow: { flexGrow: 0, flexShrink: 0, height: 56 },
   chipRowContent: { gap: 8, paddingHorizontal: 16, alignItems: "center" },
   chip: { flexShrink: 0, height: 36, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: c.borderStrong, justifyContent: "center", backgroundColor: c.surfaceSecondary },
   chipActive: { borderColor: c.brandPrimary, backgroundColor: c.brandSoft },

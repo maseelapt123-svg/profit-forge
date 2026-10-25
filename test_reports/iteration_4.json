@@ -1,0 +1,59 @@
+{
+  "summary": "Tested the new Tools and HFX features on the backend (31 pytest cases plus manual probes for the optimized bot and the daily target) and on the frontend (Playwright at 375x667). Backend: 30/31 passed. The one failure is PUT /api/hfx/bot returning 500 when a setup has a non-numeric expiry. The optimized HFX bot opened a trade using its per-pair setup (EURGBP rsi2) and settled it. max_per_hour, the daily target auto-stop, the hfx log scope and the 400 errors on real trades all work. Frontend: every requested flow works, including tabs, stack screens, tools hub, calculator (exact expected values), patterns, chart tool chips with the RSI panel, HFX trading, optimizer to bot hand-off, bot screen and plugins screen. One HFX layout bug was found and fixed: the pair chips row collapsed to 12px and the chips were clipped. Deprecated packages detected: none (no expo-av, expo-barcode-scanner or expo-background-fetch). SafeAreaView issues detected: none.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/hfx/bot", "issue": "A setup with a non-numeric expiry (e.g. {'rule':'rsi2','expiry':'x'}) returns 500 because of an unguarded int(v.get('expiry')) at hfx.py:658. It should return 400."},
+      {"endpoint": "GET /api/hfx/pairs?source=foo", "issue": "Returns 200 [] for an invalid source. /hfx/candles and /hfx/trade correctly return 400 'Fonte inválida'."},
+      {"endpoint": "PUT /api/hfx/bot", "issue": "Enabling the bot when today's bot P&L is already past the daily stop or target returns 200 {ok:true}. The loop then silently turns it off within 5s. The PUT should reject this, or the UI should warn. Also, the log text 'meta diária atingido' should read 'meta diária atingida' (hfx.py:444)."},
+      {"endpoint": "HFX bot loop (hfx.py run_bot)", "issue": "On activation the bot can enter on a 1m candle that closed up to ~59s earlier, because last_bar is empty. Seen in the probe: a trade opened at the same second the bot was enabled. Consider only entering when now - bar_close is a few seconds."},
+      {"endpoint": "POST /api/hfx/optimize (hfx_optimize)", "issue": "The docstring says the winner must beat break-even with its 95% lower bound on train, but the code checks train.lower_bound > 50, not > breakeven (54.9%) (hfx.py:317). Also, the test-set Wilson lower bounds of both validated pairs are below break-even (USDCAD 54.0%, EURUSD 53.1%), so out-of-sample results are not statistically proven profitable. The UI label 'Pior caso estimado (95%)' shows the train lower bound, not the test one."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "HFX pair chips (shared ChipRow)", "issue": "On the HFX tab the horizontal ScrollView shrank to 12px height inside the fixed header column, so the pair chips were cut off and only half visible. FIXED by adding flexShrink: 0 to styles.chipRow in src/components/ui.tsx. Verified: 56px height, chips fully visible.", "testID": "hfx-pairs", "priority": "HIGH (fixed)"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "HFX tab", "issues": [
+        "In the stats card the 'Saldo' value wraps badly at 375px ('$10 067,0' / '0'). Use adjustsFontSizeToFit or numberOfLines={1}, or give Saldo a wider cell.",
+        "The fixed header (title, source toggle, quick buttons, pair chips) takes about 255px of a 667px viewport. Only ~350px is left for the scrolling content on small phones.",
+        "Touch targets below 44px: pair chips (36px tall), the 1/3 min expiry segment (36px), and the amount presets ($5 is 40x36)."
+      ]},
+      {"screen": "Plugins HFX", "issue_note": "", "issues": ["On save, router.back() is called without checking canGoBack(). When the screen is opened by deep link or refresh, 'GO_BACK was not handled' appears. Use router.canGoBack() ? router.back() : router.replace('/(tabs)/hfx')."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter4_hfx_tools.py",
+    "/app/backend/tests/test_iter5_hfx_plugins_opt.py",
+    "/app/backend/tests/manual_hfx_optimized_bot_probe.py",
+    "/app/test_reports/pytest/pytest_iter5.xml"
+  ],
+  "action_items": [
+    "hfx.py:658 – validate the setup expiry type (try/except or a pydantic model) so the endpoint returns 400 instead of 500.",
+    "GET /api/hfx/pairs – return 400 for an unknown source.",
+    "Optimizer: make the validation rule match the docstring and UI copy (train lower bound > breakeven). Consider also showing the test lower bound in the UI.",
+    "PUT /api/hfx/bot – reject enabling when the daily stop or target is already hit (or show a warning). Fix the grammar 'meta diária atingida'.",
+    "HFX bot: skip entries on stale closed candles right after activation.",
+    "Perf: run_bot calls analyze_pair for every pair every 5s, even when the candle has not changed. Check bar_ts before analysing. /hfx/signals runs CPU-bound pandas analysis on the event loop; consider asyncio.to_thread. /hfx/trades loads up to 10k docs every 2s per client for stats; use an aggregation.",
+    "HFX UI: fix the Saldo text wrapping and raise touch targets to 44px. The HFX tab keeps polling (2s trades, 2s candles) even when another tab is focused; gate the queries with useIsFocused."
+  ],
+  "critical_code_review_comments": [
+    "Real-forex binary trades are entered at the latest yfinance 1m close, which can be delayed. If no new candle arrives within 5 min, settle_due settles with the last available (possibly stale) close. That can produce ties or wrong outcomes.",
+    "The optimizer validates setups on REAL 1m forex, but the HFX bot defaults to source=otc. On OTC (a synthetic random walk) the validated edge does not carry over. Sending setups to the bot keeps the bot's current source; consider prompting the user to switch to 'real' or labelling this clearly.",
+    "hfx.py is 672 lines, close to the 700-line limit; consider splitting it into plugins/optimizer/routes modules."
+  ],
+  "updated_files": [
+    "/app/frontend/src/components/ui.tsx (chipRow: added flexShrink: 0)",
+    "/app/backend/tests/test_iter5_hfx_plugins_opt.py (new)",
+    "/app/backend/tests/manual_hfx_optimized_bot_probe.py (new)"
+  ],
+  "success_rate": {"backend": "97% (30/31 pytest + manual probes passed)", "frontend": "100% of requested flows (1 layout bug fixed)"},
+  "seed_data_creation": "None. The test user was restored afterwards: HFX bot disabled, strategy auto, setups {}, main bot off, account reset to $10,000 (also clears HFX trades), HFX plugin params restored (rsi2.lower=5, streak off).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Weekend: real forex is closed, so real trades return 400 and the CALL/PUT buttons are disabled with an hfx-market-closed banner. The optimizer takes ~1-15s. Run pytest with -n 0 and EXPO_PUBLIC_BACKEND_URL exported. Segmented and ChipRow child testIDs are `${testID}-${value}` (e.g. hfx-source-real, hfx-pairs-EURUSD=X, hfx-bot-strategy-optimized). Bot logs use the field 'msg'. POST /api/portfolio/reset wipes HFX trades too.",
+  "rca_of_issue": "HFX pair chips clipped: the ChipRow ScrollView (horizontal) sits in a column outside the main ScrollView. react-native-web gives ScrollView flexShrink:1, so the fixed height:56 was shrunk to 12px. Fixed with flexShrink:0."
+}

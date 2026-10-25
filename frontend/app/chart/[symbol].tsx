@@ -8,7 +8,8 @@ import Animated, { FadeIn } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api, fmt, streamSSE } from "@/src/api";
-import { CandleChart, Candle, Struct, Zone } from "@/src/components/charts";
+import { CandleChart, Candle, HLine, RsiPanel, Series, Struct, Zone } from "@/src/components/charts";
+import { MarkdownLite } from "@/src/components/markdown";
 import { useToast } from "@/src/components/toast";
 import { Button, ChipRow, Segmented, haptic } from "@/src/components/ui";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
@@ -16,7 +17,17 @@ import { fonts, makeStyles, useTheme } from "@/src/theme";
 type ChartData = {
   symbol: string; display: string; name: string; price: number; decimals: number; candles: Candle[];
   order_blocks: Zone[]; fvgs: Zone[]; structure: Struct[]; trend: number;
+  indicators: { ema20: (number | null)[]; ema50: (number | null)[]; vwap: (number | null)[]; rsi: (number | null)[] };
+  sr_levels: { price: number; touches: number; type: "support" | "resistance" }[];
+  fib: { direction: string; levels: { ratio: number; price: number }[] };
 };
+const TOOLS = [
+  { value: "ema", label: "EMA 20/50" },
+  { value: "vwap", label: "VWAP" },
+  { value: "sr", label: "Suporte/Resistência" },
+  { value: "fib", label: "Fibonacci" },
+  { value: "rsi", label: "RSI" },
+];
 const TFS = [
   { value: "1m", label: "1m" },
   { value: "5m", label: "5m" },
@@ -35,6 +46,7 @@ export default function ChartScreen() {
   const { symbol, tf: tf0 } = useLocalSearchParams<{ symbol: string; tf?: string }>();
   const [tf, setTf] = useState(tf0 ?? "1h");
   const [overlays, setOverlays] = useState<string[]>(["ob", "fvg", "bos"]);
+  const [tools, setTools] = useState<string[]>(["ema"]);
   const [ai, setAi] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [side, setSide] = useState<"BUY" | "SELL" | null>(null);
@@ -50,6 +62,16 @@ export default function ChartScreen() {
   const chg = d && first ? ((d.price - first) / first) * 100 : 0;
 
   const toggle = (v: string) => setOverlays((o) => (o.includes(v) ? o.filter((x) => x !== v) : [...o, v]));
+  const toggleTool = (v: string) => setTools((o) => (o.includes(v) ? o.filter((x) => x !== v) : [...o, v]));
+  const lines: Series[] = [];
+  const hlines: HLine[] = [];
+  if (d) {
+    if (tools.includes("ema")) lines.push({ data: d.indicators.ema20, color: colors.warning }, { data: d.indicators.ema50, color: colors.info });
+    if (tools.includes("vwap")) lines.push({ data: d.indicators.vwap, color: colors.onSurfaceSecondary });
+    if (tools.includes("sr"))
+      d.sr_levels.forEach((l) => hlines.push({ price: l.price, color: l.type === "support" ? colors.success : colors.error, label: `${l.type === "support" ? "S" : "R"} x${l.touches}` }));
+    if (tools.includes("fib")) d.fib.levels.forEach((l) => hlines.push({ price: l.price, color: colors.brandPrimary, label: `${(l.ratio * 100).toFixed(1)}%` }));
+  }
 
   const runAi = async () => {
     abort.current?.abort();
@@ -110,10 +132,18 @@ export default function ChartScreen() {
               structure={d.structure}
               decimals={d.decimals}
               show={{ ob: overlays.includes("ob"), fvg: overlays.includes("fvg"), bos: overlays.includes("bos") }}
+              lines={lines}
+              hlines={hlines}
             />
           )}
         </View>
+        {d && tools.includes("rsi") && (
+          <View style={styles.rsiBox}>
+            <RsiPanel data={d.indicators.rsi} />
+          </View>
+        )}
         <ChipRow options={OVERLAYS as any} value={overlays} onChange={toggle} testID="chart-overlay" />
+        <ChipRow options={TOOLS} value={tools} onChange={toggleTool} testID="chart-tools" />
         {d && (
           <View style={styles.legend}>
             <Text style={styles.legendText}>
@@ -145,34 +175,6 @@ export default function ChartScreen() {
         <Button label="Vender" variant="sell" style={{ flex: 1 }} onPress={() => setSide("SELL")} disabled={!d} testID="sell-button" />
       </View>
       {d && <OrderSheet side={side} onClose={() => setSide(null)} data={d} />}
-    </View>
-  );
-}
-
-function MarkdownLite({ text }: { text: string }) {
-  const styles = useStyles();
-  return (
-    <View style={{ gap: 4 }} testID="ai-analysis-text">
-      {text.split("\n").map((line, i) => {
-        const t = line.trim();
-        if (!t) return <View key={i} style={{ height: 4 }} />;
-        const heading = /^(#+\s|\*\*[^*]+\*\*:?$)/.test(t);
-        const clean = t.replace(/^#+\s*/, "").replace(/^[-*]\s+/, "• ");
-        const parts = clean.split(/(\*\*[^*]+\*\*)/g);
-        return (
-          <Text key={i} style={heading ? styles.mdHead : styles.mdText}>
-            {parts.map((p, j) =>
-              p.startsWith("**") && p.endsWith("**") ? (
-                <Text key={j} style={styles.mdBold}>
-                  {p.slice(2, -2)}
-                </Text>
-              ) : (
-                p
-              ),
-            )}
-          </Text>
-        );
-      })}
     </View>
   );
 }
@@ -270,6 +272,7 @@ const useStyles = makeStyles((c) => ({
   chartBox: { marginTop: 12, paddingLeft: 8, borderTopWidth: 1, borderBottomWidth: 1, borderColor: c.border, backgroundColor: c.surface, overflow: "hidden" },
   chartLoading: { height: 320, alignItems: "center", justifyContent: "center", gap: 12 },
   legend: { paddingHorizontal: 16 },
+  rsiBox: { paddingLeft: 8, borderBottomWidth: 1, borderColor: c.border },
   legendText: { color: c.muted, fontFamily: fonts.text, fontSize: 12 },
   aiCard: { margin: 16, backgroundColor: c.surfaceSecondary, borderRadius: 12, borderWidth: 1, borderColor: c.border, padding: 16, gap: 12 },
   aiHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
@@ -278,9 +281,6 @@ const useStyles = makeStyles((c) => ({
   aiBtnText: { color: c.brandPrimary, fontFamily: fonts.displaySemi, fontSize: 14 },
   muted: { color: c.onSurfaceSecondary, fontFamily: fonts.text, fontSize: 14 },
   muted2: { color: c.muted, fontFamily: fonts.text, fontSize: 13, lineHeight: 19 },
-  mdHead: { color: c.brandPrimary, fontFamily: fonts.display, fontSize: 16, marginTop: 6 },
-  mdText: { color: c.onSurfaceTertiary, fontFamily: fonts.text, fontSize: 14, lineHeight: 21 },
-  mdBold: { color: c.onSurface, fontWeight: "700" },
   bar: { flexDirection: "row", gap: 12, paddingHorizontal: 16, paddingTop: 12, borderTopWidth: 1, borderTopColor: c.border, backgroundColor: c.surface },
   scrim: { flex: 1, backgroundColor: c.scrim },
   sheet: { backgroundColor: c.surfaceSecondary, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, gap: 12, borderTopWidth: 1, borderColor: c.borderStrong },

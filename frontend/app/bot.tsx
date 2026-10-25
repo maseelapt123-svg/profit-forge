@@ -11,7 +11,7 @@ import { Button, Center, ChipRow, haptic } from "@/src/components/ui";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type Setup = { symbol: string; tf: string; strategy: string; sl_atr: number; rr: number; trend_filter: boolean; mtf: boolean };
-type Bot = { setups?: Setup[]; mtf: boolean; trend_filter: boolean; enabled: boolean; symbols: string[]; tf: string; strategy: string; risk_pct: number; sl_atr: number; rr: number; max_positions: number; last_run?: string };
+type Bot = { setups?: Setup[]; mtf: boolean; ai_filter: boolean; trend_filter: boolean; enabled: boolean; symbols: string[]; tf: string; strategy: string; risk_pct: number; sl_atr: number; rr: number; max_positions: number; last_run?: string };
 type Resp = {
   bot: Bot; logs: { log_id: string; kind: string; msg: string; created_at: string }[];
   stats: { trades: number; pnl: number; wins: number; open: number }; assets: { symbol: string; display: string; category: string }[];
@@ -147,9 +147,10 @@ export default function BotScreen() {
             options={[
               { value: "trend", label: "Filtro de tendência EMA200" },
               { value: "mtf", label: "Confirmar TF superior" },
+              { value: "ai", label: "✨ Filtro IA" },
             ]}
-            value={[...(cfg.trend_filter ? ["trend"] : []), ...(cfg.mtf ? ["mtf"] : [])]}
-            onChange={(v) => (v === "trend" ? upd({ trend_filter: !cfg.trend_filter }) : upd({ mtf: !cfg.mtf }))}
+            value={[...(cfg.trend_filter ? ["trend"] : []), ...(cfg.mtf ? ["mtf"] : []), ...(cfg.ai_filter ? ["ai"] : [])]}
+            onChange={(v) => (v === "trend" ? upd({ trend_filter: !cfg.trend_filter }) : v === "mtf" ? upd({ mtf: !cfg.mtf }) : upd({ ai_filter: !cfg.ai_filter }))}
             testID="bot-trend-filter"
           />
           <Text style={styles.section}>Ativos ({cfg.symbols.length})</Text>
@@ -196,13 +197,16 @@ export default function BotScreen() {
             </Text>
           </View>
 
+          <View style={{ paddingHorizontal: 16, marginTop: 8 }}>
+            <Button label="Ver Análise de Perdas" variant="ghost" onPress={() => router.push({ pathname: "/analysis", params: { scope: "bot" } })} testID="bot-open-analysis" />
+          </View>
           <Text style={styles.section}>Atividade</Text>
           <View style={{ paddingHorizontal: 16 }} testID="bot-logs">
             {q.data.logs.length === 0 && <Text style={styles.muted}>Sem atividade ainda.</Text>}
             {q.data.logs.map((l) => (
               <View key={l.log_id} style={styles.log}>
                 <Ionicons
-                  name={l.kind === "open" ? "arrow-forward-circle" : l.kind === "close" ? "checkmark-circle" : l.kind === "skip" ? "remove-circle" : "power"}
+                  name={l.kind === "open" ? "arrow-forward-circle" : l.kind === "close" ? "checkmark-circle" : l.kind === "skip" ? "remove-circle" : l.kind === "ai" ? "sparkles" : "power"}
                   size={18}
                   color={l.kind === "open" ? colors.brandPrimary : l.kind === "close" ? colors.success : colors.muted}
                 />

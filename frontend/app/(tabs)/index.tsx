@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { useState } from "react";
-import { ActivityIndicator, FlatList, RefreshControl, Text, View } from "react-native";
+import { Ionicons } from "@react-native-vector-icons/ionicons";
+import { ActivityIndicator, FlatList, Pressable, RefreshControl, Text, View } from "react-native";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -27,8 +28,19 @@ export default function Markets() {
   return (
     <View style={styles.root} testID="markets-screen">
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
-        <Text style={styles.title}>Mercados</Text>
-        <Text style={styles.subtitle}>Preços ao vivo · atualiza a cada 30s</Text>
+        <View style={styles.titleRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>Mercados</Text>
+            <Text style={styles.subtitle}>Preços ao vivo · atualiza a cada 30s</Text>
+          </View>
+          <Pressable testID="open-signals-button" style={styles.hdrBtn} onPress={() => router.push("/signals")}>
+            <Ionicons name="flash" size={18} color={colors.brandPrimary} />
+          </Pressable>
+          <Pressable testID="open-tools-button" style={styles.hdrBtnWide} onPress={() => router.push("/tools")}>
+            <Ionicons name="construct" size={18} color={colors.brandPrimary} />
+            <Text style={styles.hdrBtnText}>Ferramentas</Text>
+          </Pressable>
+        </View>
         <View style={{ marginTop: 12 }}>
           <Segmented options={CATEGORIES} value={cat} onChange={setCat} testID="markets-category" />
         </View>
@@ -81,6 +93,10 @@ const useStyles = makeStyles((c) => ({
   root: { flex: 1, backgroundColor: c.surface },
   header: { paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: c.border },
   title: { color: c.onSurface, fontFamily: fonts.display, fontSize: 32 },
+  titleRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  hdrBtn: { width: 44, height: 44, borderRadius: 22, borderWidth: 1, borderColor: c.brandPrimary, alignItems: "center", justifyContent: "center" },
+  hdrBtnWide: { flexDirection: "row", gap: 6, height: 44, paddingHorizontal: 14, borderRadius: 22, borderWidth: 1, borderColor: c.brandPrimary, alignItems: "center" },
+  hdrBtnText: { color: c.brandPrimary, fontFamily: fonts.displaySemi, fontSize: 15 },
   subtitle: { color: c.muted, fontFamily: fonts.text, fontSize: 12 },
   row: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: c.divider },
   sym: { color: c.onSurface, fontFamily: fonts.display, fontSize: 17 },

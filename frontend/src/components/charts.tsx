@@ -10,9 +10,12 @@ export type Struct = { type: string; dir: "bull" | "bear"; price: number; idx: n
 
 const AXIS = 58;
 
-export function CandleChart({ candles, obs = [], fvgs = [], structure = [], height = 320, decimals = 2, show }: {
+export type Series = { data: (number | null)[]; color: string };
+export type HLine = { price: number; color: string; label?: string };
+
+export function CandleChart({ candles, obs = [], fvgs = [], structure = [], height = 320, decimals = 2, show, lines = [], hlines = [] }: {
   candles: Candle[]; obs?: Zone[]; fvgs?: Zone[]; structure?: Struct[]; height?: number; decimals?: number;
-  show: { ob: boolean; fvg: boolean; bos: boolean };
+  show: { ob: boolean; fvg: boolean; bos: boolean }; lines?: Series[]; hlines?: HLine[];
 }) {
   const { colors } = useTheme();
   const [w, setW] = useState(0);
@@ -82,6 +85,25 @@ export function CandleChart({ candles, obs = [], fvgs = [], structure = [], heig
                 <Rect x={x(i) - cw * 0.35} y={bt} width={Math.max(1, cw * 0.7)} height={bh} fill={col} />
               </React.Fragment>
             );
+          })}
+          {hlines
+            .filter((hl) => hl.price < hi && hl.price > lo)
+            .map((hl, i) => (
+              <React.Fragment key={`h${i}`}>
+                <Line x1={0} x2={plotW} y1={y(hl.price)} y2={y(hl.price)} stroke={hl.color} strokeWidth={0.8} strokeDasharray="6,4" opacity={0.8} />
+                {hl.label ? (
+                  <SvgText x={4} y={y(hl.price) - 3} fill={hl.color} fontSize={9} fontFamily={fonts.display}>
+                    {hl.label}
+                  </SvgText>
+                ) : null}
+              </React.Fragment>
+            ))}
+          {lines.map((ln, li) => {
+            const pts = ln.data
+              .map((v, i) => (v === null || v > hi || v < lo ? null : `${x(i)},${y(v)}`))
+              .filter(Boolean)
+              .join(" ");
+            return pts ? <Polyline key={`l${li}`} points={pts} fill="none" stroke={ln.color} strokeWidth={1.4} /> : null;
           })}
           {show.bos &&
             structure.map((s, i) => {
@@ -155,5 +177,36 @@ export function Sparkline({ data, width = 64, height = 28 }: { data: number[]; w
     <Svg width={width} height={height}>
       <Polyline points={pts} fill="none" stroke={col} strokeWidth={1.5} />
     </Svg>
+  );
+}
+
+export function RsiPanel({ data, height = 90 }: { data: (number | null)[]; height?: number }) {
+  const { colors } = useTheme();
+  const [w, setW] = useState(0);
+  const plotW = Math.max(0, w - AXIS);
+  const y = (v: number) => height - (v / 100) * height;
+  const n = data.length || 1;
+  const pts = data.map((v, i) => (v === null ? null : `${(i + 0.5) * (plotW / n)},${y(v)}`)).filter(Boolean).join(" ");
+  const last = [...data].reverse().find((v) => v !== null) ?? 50;
+  return (
+    <View onLayout={(e) => setW(e.nativeEvent.layout.width)} style={{ height }} testID="rsi-panel">
+      {w > 0 && (
+        <Svg width={w} height={height}>
+          <Rect x={0} y={y(70)} width={plotW} height={y(30) - y(70)} fill={colors.brandPrimary} opacity={0.06} />
+          {[30, 50, 70].map((v) => (
+            <React.Fragment key={v}>
+              <Line x1={0} x2={plotW} y1={y(v)} y2={y(v)} stroke={colors.divider} strokeWidth={0.6} strokeDasharray={v === 50 ? "2,3" : undefined} />
+              <SvgText x={plotW + 6} y={y(v) + 4} fill={colors.muted} fontSize={10} fontFamily={fonts.text}>
+                {v}
+              </SvgText>
+            </React.Fragment>
+          ))}
+          <Polyline points={pts} fill="none" stroke={colors.info} strokeWidth={1.4} />
+          <SvgText x={4} y={12} fill={colors.info} fontSize={10} fontFamily={fonts.display}>
+            {`RSI 14 · ${(last as number).toFixed(1)}`}
+          </SvgText>
+        </Svg>
+      )}
+    </View>
   );
 }

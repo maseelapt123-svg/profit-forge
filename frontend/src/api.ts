@@ -63,7 +63,14 @@ export async function streamSSE(path: string, body: any, onDelta: (t: string) =>
     body: JSON.stringify(body),
     signal,
   });
-  if (!res.ok || !res.body) throw new ApiError(res.status, "Falha na análise IA");
+  if (!res.ok || !res.body) {
+    let msg = "Falha na análise IA";
+    try {
+      const j = await res.json();
+      if (typeof j.detail === "string") msg = j.detail;
+    } catch {}
+    throw new ApiError(res.status, msg);
+  }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -90,7 +97,7 @@ export function fmt(n: number, d = 2) {
   return n.toLocaleString("pt-PT", { minimumFractionDigits: d, maximumFractionDigits: d });
 }
 export function money(n: number) {
-  return `$${fmt(n, 2)}`;
+  return `${n < 0 ? "-" : ""}$${fmt(Math.abs(n), 2)}`;
 }
 export function pct(n: number) {
   return `${n >= 0 ? "+" : ""}${fmt(n, 2)}%`;

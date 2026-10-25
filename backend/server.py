@@ -22,7 +22,9 @@ import yfinance as yf
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-from strategies import PLUGIN_DEFAULTS, PLUGIN_META, FEES, compute_signals, smc_analyze, atr, run_backtest, optimize, strategy_signals, trend_filtered, apply_filters, mtf_filtered, htf_trend, ema, rsi  # noqa: E402
+from strategies import PLUGIN_DEFAULTS, PLUGIN_META, FEES, compute_signals, smc_analyze, atr, run_backtest, optimize, strategy_signals, trend_filtered, apply_filters, mtf_filtered, htf_trend, ema, rsi, vwap, sr_levels, fib_levels, detect_patterns  # noqa: E402
+import hfx  # noqa: E402
+import ai  # noqa: E402
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -171,8 +173,9 @@ async def auth_session(body: SessionIn):
         await db.users.insert_one({"user_id": user_id, "email": email, "name": data.get("name"),
                                    "picture": data.get("picture"), "created_at": datetime.now(timezone.utc)})
     now = datetime.now(timezone.utc)
-    await db.user_sessions.insert_one({"session_token": data["session_token"], "user_id": user_id,
-                                       "expires_at": now + timedelta(days=7), "created_at": now})
+    await db.user_sessions.update_one({"session_token": data["session_token"]},  # idempotent: same session_id may be exchanged twice
+                                      {"$set": {"user_id": user_id, "expires_at": now + timedelta(days=7), "created_at": now}},
+                                      upsert=True)
     user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "created_at": 0})
     return {"session_token": data["session_token"], "user": user}
 
@@ -217,9 +220,13 @@ async def markets(category: str = "crypto"):
 
 @api.get("/candles")
 async def candles(symbol: str, tf: str = "1h", limit: int = 120):
-    df = await get_df(symbol, tf)
-    smc = smc_analyze(df)
-    df = df.iloc[-limit:]
+    full = await get_df(symbol, tf)
+    smc = smc_analyze(full)
+    df = full.iloc[-limit:]
+    ind = {
+        "ema20": ema(full["close"], 20).iloc[-limit:], "ema50": ema(full["close"], 50).iloc[-limit:],
+        "vwap": vwap(full).iloc[-limit:], "rsi": rsi(full["close"], 14).iloc[-limit:],
+    }
     offset = smc["_n"] - len(df)
     out = [{"t": int(ix.timestamp()), "o": float(r.open), "h": float(r.high), "l": float(r.low), "c": float(r.close)}
            for ix, r in df.iterrows()]
@@ -241,7 +248,34 @@ async def candles(symbol: str, tf: str = "1h", limit: int = 120):
         "fvgs": shift(smc["fvgs"]),
         "structure": [s for s in shift(smc["structure"]) if s["break_idx"] >= 0],
         "trend": smc["trend"],
+        "indicators": {k: [None if pd.isna(x) else round(float(x), 8) for x in v.tolist()] for k, v in ind.items()},
+        "sr_levels": sr_levels(full.iloc[-300:]),
+        "fib": fib_levels(df),
     }
+
+
+@api.get("/patterns")
+async def patterns(category: str = "crypto", tf: str = "1h"):
+    if category not in ASSETS:
+        raise HTTPException(400, "Categoria inválida")
+
+    async def one(sym):
+        try:
+            df = await get_df(sym, tf)
+        except HTTPException:
+            return None
+        found = []
+        for back in (2, 3, 4):  # last 3 closed candles
+            i = len(df) - back
+            for p in detect_patterns(df, i):
+                found.append({**p, "bars_ago": back - 1, "time": df.index[i].isoformat()})
+        last = float(df["close"].iloc[-1])
+        return {"symbol": sym, "display": display(sym), "name": ASSET_INFO[sym]["name"], "price": last,
+                "decimals": price_decimals(last), "patterns": found,
+                "trend": "alta" if last > float(ema(df["close"], 50).iloc[-1]) else "baixa"}
+    res = [r for r in await asyncio.gather(*[one(s) for s, _ in ASSETS[category]]) if r]
+    res.sort(key=lambda x: -len(x["patterns"]))
+    return res
 
 # ---------------------------------------------------------------- plugins
 PARAM_RANGES = {"swing": (1, 20), "length": (2, 200), "oversold": (1, 50), "overbought": (50, 99),
@@ -584,7 +618,9 @@ async def portfolio(request: Request):
         h["decimals"] = price_decimals(h["entry"])
     realized = acc["balance"] - acc["start_balance"]
     wins = sum(1 for h in history if h["pnl"] > 0)
-    return {"balance": acc["balance"], "equity": acc["balance"] + unreal, "unrealized": unreal, "realized": realized,
+    hfx_open = await db.hfx_trades.find({"user_id": u["user_id"], "status": "open"}, {"_id": 0, "amount": 1}).to_list(500)
+    locked = sum(t["amount"] for t in hfx_open)
+    return {"balance": acc["balance"], "hfx_locked": locked, "equity": acc["balance"] + unreal + locked, "unrealized": unreal, "realized": realized,
             "start_balance": acc["start_balance"], "win_rate": (wins / len(history) * 100) if history else 0,
             "positions": positions, "history": history}
 
@@ -636,13 +672,14 @@ async def reset_portfolio(request: Request):
     u = await get_user(request)
     await db.positions.delete_many({"user_id": u["user_id"]})
     await db.bot_logs.delete_many({"user_id": u["user_id"]})
+    await db.hfx_trades.delete_many({"user_id": u["user_id"]})
     await db.accounts.update_one({"user_id": u["user_id"]}, {"$set": {"balance": START_BALANCE, "start_balance": START_BALANCE}}, upsert=True)
     return {"ok": True}
 
 
 # ---------------------------------------------------------------- auto-trading bot (paper)
 BOT_DEFAULT = {"enabled": False, "symbols": ["BTC-USD", "ETH-USD", "EURUSD=X"], "tf": "1h", "strategy": "smc", "trend_filter": True, "mtf": True, "setups": [],
-               "risk_pct": 1.0, "sl_atr": 1.5, "rr": 2.0, "max_positions": 3}
+               "risk_pct": 1.0, "sl_atr": 1.5, "rr": 2.0, "max_positions": 3, "ai_filter": False}
 
 
 class BotSetup(BaseModel):
@@ -666,6 +703,7 @@ class BotIn(BaseModel):
     max_positions: int = Field(3, ge=1, le=10)
     trend_filter: bool = True
     mtf: bool = True
+    ai_filter: bool = False
     setups: List[BotSetup] = []
 
 
@@ -704,6 +742,76 @@ async def check_exits(user_id: str):
 
 _bot_locks: Dict[str, asyncio.Lock] = {}
 
+BOT_DIAG = {
+    "setup": "{k}: perde dinheiro em conta real do robô (PF {pf:.2f}). Correção: quarentena desta configuração até reotimizar.",
+    "hour": "As entradas às {k}h UTC perdem mais. Correção: o robô deixa de entrar a esta hora.",
+    "against_htf": "Entradas contra a tendência do timeframe superior perdem mais. Correção: confirmação do TF superior em todos os setups.",
+    "stops": "{k}% das operações saem no stop — stop demasiado curto ou entradas cedo demais. Correção: stop 0,5x ATR mais largo.",
+}
+
+
+async def bot_loss_analysis(uid: str) -> dict:
+    since = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+    trades = await db.positions.find({"user_id": uid, "source": "bot", "status": "closed", "closed_at": {"$gte": since}},
+                                     {"_id": 0}).sort("closed_at", -1).to_list(300)
+    groups: Dict[tuple, list] = {}
+    for t in trades:
+        ctx = t.get("ctx") or {}
+        key = t.get("setup") or f"{t['symbol']}|?"
+        groups.setdefault(("setup", key), []).append(t["pnl"])
+        if "hour" in ctx:
+            groups.setdefault(("hour", ctx["hour"]), []).append(t["pnl"])
+        if ctx.get("htf_aligned") is False:
+            groups.setdefault(("against_htf", ""), []).append(t["pnl"])
+    problems = []
+    for (kind, k), pnls in groups.items():
+        if len(pnls) < 6:
+            continue
+        gp = sum(x for x in pnls if x > 0)
+        gl = -sum(x for x in pnls if x <= 0)
+        pf = gp / gl if gl > 0 else 99.0
+        if pf < 1:
+            sym, tf = (str(k).split("|") + ["?"])[:2]
+            label = f"{display(sym)} {tf.upper()}" if kind == "setup" else str(k)
+            problems.append({"kind": kind, "key": k, "label": label, "n": len(pnls), "pnl": sum(pnls), "pf": pf,
+                             "winrate": sum(1 for x in pnls if x > 0) / len(pnls) * 100,
+                             "text": BOT_DIAG[kind].format(k=label, pf=pf)})
+    if len(trades) >= 8:
+        sl = sum(1 for t in trades if t.get("reason") == "stop_loss") / len(trades) * 100
+        if sl > 65:
+            problems.append({"kind": "stops", "key": round(sl), "label": f"{sl:.0f}%", "n": len(trades), "pnl": 0, "pf": 0,
+                             "winrate": 0, "text": BOT_DIAG["stops"].format(k=f"{sl:.0f}")})
+    problems.sort(key=lambda x: x["pnl"])
+    wins = sum(1 for t in trades if t["pnl"] > 0)
+    return {"trades": len(trades), "winrate": wins / len(trades) * 100 if trades else 0.0, "pnl": sum(t["pnl"] for t in trades),
+            "losses": len(trades) - wins, "problems": problems,
+            "recent_losses": [{"display": display(t["symbol"]), "tf": t.get("tf"), "side": t["side"], "pnl": t["pnl"],
+                               "reason": t.get("reason"), "ctx": t.get("ctx"), "closed_at": t.get("closed_at")}
+                              for t in trades if t["pnl"] <= 0][:15]}
+
+
+async def bot_auto_fix(uid: str, force: bool = False) -> Optional[dict]:
+    bot = await get_bot(uid)
+    if not force and (not bot.get("auto_fix", True) or time.time() - bot.get("fix_ts", 0) < 600):
+        return None
+    an = await bot_loss_analysis(uid)
+    fx = {"paused": [], "hours": [], "force_mtf": False, "widen_stop": False}
+    for p in an["problems"]:
+        if p["kind"] == "setup":
+            fx["paused"].append(p["key"])
+        elif p["kind"] == "hour":
+            fx["hours"].append(int(p["key"]))
+        elif p["kind"] == "against_htf":
+            fx["force_mtf"] = True
+        elif p["kind"] == "stops":
+            fx["widen_stop"] = True
+    old = bot.get("fixes") or {}
+    await db.bots.update_one({"user_id": uid}, {"$set": {"fixes": fx, "fix_ts": time.time()}}, upsert=True)
+    if fx != old and an["problems"]:
+        await bot_log(uid, "fix", f"Análise de perdas: {len(an['problems'])} problema(s) corrigido(s) — " +
+                      "; ".join(p["text"].split(" Correção")[0] for p in an["problems"][:3]))
+    return {"analysis": an, "fixes": fx}
+
 
 async def run_bot_cycle(bot: dict) -> int:
     lock = _bot_locks.setdefault(bot["user_id"], asyncio.Lock())
@@ -724,11 +832,18 @@ async def _run_bot_cycle(bot: dict) -> int:
     jobs = [{"symbol": s, "tf": bot["tf"], "strategy": bot["strategy"], "sl_atr": bot["sl_atr"], "rr": bot["rr"],
              "trend_filter": bot.get("trend_filter", True), "mtf": bot.get("mtf", True)}
             for s in bot["symbols"] if s not in with_setup] + setups
+    fixes = bot.get("fixes") or {}
     for cfg in jobs:
         sym = cfg["symbol"]
         if sym not in ASSET_INFO:
             continue
         key = f"{sym}|{cfg['tf']}"
+        if key in fixes.get("paused", []) or datetime.now(timezone.utc).hour in fixes.get("hours", []):
+            continue
+        if fixes.get("force_mtf"):
+            cfg = {**cfg, "mtf": True}
+        if fixes.get("widen_stop"):
+            cfg = {**cfg, "sl_atr": min(5.0, cfg["sl_atr"] + 0.5)}
         tag = f"{display(sym)} {cfg['tf'].upper()}"
         try:
             df = await get_df(sym, cfg["tf"])
@@ -772,14 +887,32 @@ async def _run_bot_cycle(bot: dict) -> int:
         qty = (acc["balance"] * bot["risk_pct"] / 100) / stop
         qty = min(qty, acc["balance"] * 10 / price)
         d = 1 if side == "BUY" else -1
+        htf_ok = (int(htf_trend(df, htf)[-1]) == d) if htf is not None else None
+        ai_note = ""
+        if bot.get("ai_filter"):
+            dec = price_decimals(price)
+            closes = ", ".join(f"{x:.{dec}f}" for x in df["close"].iloc[-20:])
+            v = await ai.ai_filter(
+                f"{'COMPRA' if side == 'BUY' else 'VENDA'} em {tag} ({ASSET_INFO[sym]['category']}), estratégia {cfg['strategy']}, "
+                f"preço {price:.{dec}f}, SL {cfg['sl_atr']}x ATR, R:R {cfg['rr']}.\n"
+                f"EMA200: {'acima' if price > float(ema(df['close'], 200).iloc[-1]) else 'abaixo'} · RSI14 {float(rsi(df['close'], 14).iloc[-1]):.1f} · "
+                f"ATR14 {a:.{dec}f} · TF superior {'alinhado' if htf_ok else 'CONTRA' if htf_ok is False else 'sem dados'}.\n"
+                f"Últimos 20 fechos: {closes}")
+            if not v["approve"]:
+                await bot_log(uid, "ai", f"IA rejeitou {side} {tag}: {v['reason']} ({v['confidence']}%)", sym)
+                continue
+            ai_note = f" · IA ✓ {v['confidence']}%"
         pos = {"position_id": uuid.uuid4().hex[:16], "user_id": uid, "symbol": sym, "side": side, "qty": float(qty),
                "entry": price, "stop_loss": price - d * stop, "take_profit": price + d * stop * cfg["rr"],
-               "status": "open", "source": "bot", "setup": key, "tf": cfg["tf"], "stop_dist": float(stop), "opened_at": datetime.now(timezone.utc).isoformat()}
+               "status": "open", "source": "bot", "setup": key, "tf": cfg["tf"], "stop_dist": float(stop),
+               "ctx": {"hour": datetime.now(timezone.utc).hour,
+                       "htf_aligned": htf_ok}, "opened_at": datetime.now(timezone.utc).isoformat()}
         await db.positions.insert_one(dict(pos))
         opened += 1
         dec = price_decimals(price)
-        await bot_log(uid, "open", f"{'COMPRA' if side == 'BUY' else 'VENDA'} {tag}{(' · tendência ' + HTF_MAP[cfg['tf']].upper() + ' confirmada') if cfg.get('mtf') and htf is not None else ''} @ {price:.{dec}f} · SL {pos['stop_loss']:.{dec}f} · TP {pos['take_profit']:.{dec}f}", sym)
+        await bot_log(uid, "open", f"{'COMPRA' if side == 'BUY' else 'VENDA'} {tag}{(' · tendência ' + HTF_MAP[cfg['tf']].upper() + ' confirmada') if cfg.get('mtf') and htf is not None else ''} @ {price:.{dec}f} · SL {pos['stop_loss']:.{dec}f} · TP {pos['take_profit']:.{dec}f}{ai_note}", sym)
     await db.bots.update_one({"user_id": uid}, {"$set": {"last_run": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    await bot_auto_fix(uid)
     return opened
 
 
@@ -806,7 +939,8 @@ async def bot_get(request: Request):
     u = await get_user(request)
     bot = await get_bot(u["user_id"])
     bot.pop("last_bar", None)
-    logs = await db.bot_logs.find({"user_id": u["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    bot.pop("fix_ts", None)
+    logs = await db.bot_logs.find({"user_id": u["user_id"], "scope": {"$ne": "hfx"}}, {"_id": 0}).sort("created_at", -1).to_list(50)
     closed = await db.positions.find({"user_id": u["user_id"], "status": "closed", "source": "bot"}, {"_id": 0, "pnl": 1}).to_list(1000)
     n_open = await db.positions.count_documents({"user_id": u["user_id"], "status": "open", "source": "bot"})
     stats = {"trades": len(closed), "pnl": sum(p["pnl"] for p in closed), "wins": sum(1 for p in closed if p["pnl"] > 0), "open": n_open}
@@ -842,6 +976,98 @@ async def bot_put(body: BotIn, request: Request):
     return {"ok": True}
 
 
+@api.get("/bot/analysis")
+async def bot_analysis(request: Request):
+    u = await get_user(request)
+    bot = await get_bot(u["user_id"])
+    return {**await bot_loss_analysis(u["user_id"]), "fixes": bot.get("fixes") or {}, "auto_fix": bot.get("auto_fix", True)}
+
+
+@api.post("/bot/analysis/apply")
+async def bot_analysis_apply(request: Request):
+    u = await get_user(request)
+    return await bot_auto_fix(u["user_id"], force=True)
+
+
+@api.post("/bot/analysis/reset")
+async def bot_analysis_reset(request: Request):
+    u = await get_user(request)
+    await db.bots.update_one({"user_id": u["user_id"]}, {"$set": {"fixes": {}, "fix_ts": time.time()}}, upsert=True)
+    await bot_log(u["user_id"], "fix", "Correções automáticas removidas")
+    return {"ok": True}
+
+
+class AutoFixIn(BaseModel):
+    scope: str
+    enabled: bool
+
+
+@api.put("/analysis/auto-fix")
+async def set_auto_fix(body: AutoFixIn, request: Request):
+    u = await get_user(request)
+    coll = {"bot": db.bots, "hfx": db.hfx_bots}.get(body.scope)
+    if coll is None:
+        raise HTTPException(400, "Âmbito inválido")
+    await coll.update_one({"user_id": u["user_id"]}, {"$set": {"auto_fix": body.enabled}}, upsert=True)
+    return {"ok": True}
+
+
+class LossReviewIn(BaseModel):
+    scope: str
+
+
+@api.post("/ai/loss-review")
+async def ai_loss_review(body: LossReviewIn, request: Request):
+    from emergentintegrations.llm.chat import UserMessage, TextDelta, StreamDone
+    u = await get_user(request)
+    uid = u["user_id"]
+    if body.scope == "hfx":
+        bot = {**hfx.HFX_BOT_DEFAULT, **(await db.hfx_bots.find_one({"user_id": uid}, {"_id": 0, "last_bar": 0, "fix_ts": 0}) or {})}
+        trades = await db.hfx_trades.find({"user_id": uid, "origin": "bot", "status": {"$in": ["won", "lost"]},
+                                           "opened_ts": {"$gte": time.time() - 86400}}, {"_id": 0}).sort("expires_ts", -1).to_list(200)
+        if len(trades) < 3:  # fall back to all HFX trades so manual-only users still get a review
+            trades = await db.hfx_trades.find({"user_id": uid, "status": {"$in": ["won", "lost"]}}, {"_id": 0}).sort("expires_ts", -1).to_list(200)
+        an = hfx.loss_analysis(trades, 1 / (1 + hfx.PAYOUT[bot["source"]]) * 100)
+        an["recent_losses"] = [{"par": hfx.pair_display(t["pair"], t["source"]), "dir": t["direction"], "exp": t["expiry"],
+                                "regra": t.get("rule_label") or "manual", "ctx": t.get("ctx")} for t in trades if t["status"] == "lost"][:12]
+        cfg = {k: bot.get(k) for k in ("source", "pairs", "expiry", "amount", "min_winrate", "strategy", "min_votes", "max_per_hour", "auto_fix", "ai_filter")}
+    elif body.scope == "bot":
+        bot = await get_bot(uid)
+        an = await bot_loss_analysis(uid)
+        cfg = {k: bot.get(k) for k in ("symbols", "tf", "strategy", "risk_pct", "sl_atr", "rr", "max_positions", "trend_filter", "mtf", "auto_fix", "ai_filter", "setups")}
+    else:
+        raise HTTPException(400, "Âmbito inválido")
+    if an["trades"] < 3:
+        raise HTTPException(400, "Poucas operações fechadas para a IA analisar (mínimo 3)")
+    chat = ai.review_chat()
+    prompt = ai.review_prompt(body.scope, an, bot.get("fixes") or {}, cfg)
+
+    async def gen():
+        full = []
+        try:
+            async for ev in chat.stream_message(UserMessage(text=prompt)):
+                if isinstance(ev, TextDelta):
+                    full.append(ev.content)
+                    yield f"data: {json.dumps({'t': ev.content})}\n\n"
+                elif isinstance(ev, StreamDone):
+                    break
+            await db.ai_reviews.update_one({"user_id": uid, "scope": body.scope}, {"$set": {
+                "text": "".join(full), "created_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+        except Exception as e:  # stream boundary: report to client
+            logger.exception("AI review error")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield "data: [DONE]\n\n"
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@api.get("/ai/loss-review")
+async def ai_loss_review_last(scope: str, request: Request):
+    u = await get_user(request)
+    doc = await db.ai_reviews.find_one({"user_id": u["user_id"], "scope": scope}, {"_id": 0, "text": 1, "created_at": 1})
+    return doc or {"text": "", "created_at": None}
+
+
 @api.post("/bot/run")
 async def bot_run_now(request: Request):
     u = await get_user(request)
@@ -853,6 +1079,8 @@ async def bot_run_now(request: Request):
 
 
 app.include_router(api)
+hfx_router = hfx.build_router(db, get_user, get_account)
+app.include_router(hfx_router)
 app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
@@ -868,6 +1096,10 @@ async def startup():
     await db.bots.create_index("user_id", unique=True)
     await db.bot_logs.create_index([("user_id", 1), ("created_at", -1)])
     asyncio.create_task(bot_loop())
+    asyncio.create_task(hfx_router.loop())
+    await db.hfx_trades.create_index([("status", 1), ("expires_ts", 1)])
+    await db.hfx_trades.create_index([("user_id", 1), ("status", 1)])
+    await db.hfx_bots.create_index("user_id", unique=True)
 
 
 @app.on_event("shutdown")
