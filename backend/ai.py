@@ -62,6 +62,9 @@ LABELS = {
     "pair_rules": "Par/estratégia em quarentena", "trend_align": "Só a favor da tendência",
     "skip_low_vol": "Ignorar volatilidade baixa", "skip_high_vol": "Ignorar volatilidade extrema",
     "paused": "Setups em quarentena", "force_mtf": "Confirmação TF superior obrigatória", "widen_stop": "Stop 0,5x ATR mais largo",
+    "conf_votes": "Confluência: mín. plugins", "conf_score": "Confluência: pontuação mín. (%)",
+    "remove_pairs": "Remover pares", "remove_symbols": "Remover ativos", "plugin_on": "Ativar plugin", "plugin_off": "Desativar plugin",
+    "plugins_ativos": "Plugins ativos",
 }
 
 
@@ -104,6 +107,36 @@ def daily_prompt(date: str, stats: dict) -> str:
                 f"  Configuração: {labeled(s['config'])}\n  Correções ativas: {labeled(s['fixes'])}\n")
     extra = f"Ponto de equilíbrio do acerto HFX: {stats['hfx']['breakeven']:.1f}%\n"
     return f"Relatório do dia {date} (UTC).\n{extra}{block('Robô HFX', stats['hfx'])}{block('Robô principal', stats['bot'])}"
+
+
+ADJ_SYSTEM = (
+    "Converte o relatório diário de trading em ajustes concretos de configuração. Responde APENAS com um array JSON "
+    "(sem texto à volta) de 0 a 6 objetos {\"scope\": \"hfx\"|\"bot\", \"field\": <campo>, \"value\": <valor>, "
+    "\"reason\": \"máx 12 palavras em português\"}. Usa só os campos permitidos e valores dentro dos limites. "
+    "Só sugere ajustes para robôs que operaram e só quando os dados os justificam."
+)
+
+
+async def ai_adjustments(report: str, allowed: str, timeout: float = 45) -> list:
+    chat = LlmChat(api_key=os.environ["EMERGENT_LLM_KEY"], session_id=f"adj_{uuid.uuid4().hex}",
+                   system_message=ADJ_SYSTEM).with_model("openai", "gpt-5.4")
+
+    async def collect() -> str:
+        out = []
+        async for ev in chat.stream_message(UserMessage(text=f"{allowed}\n\nRelatório:\n{report}")):
+            if isinstance(ev, TextDelta):
+                out.append(ev.content)
+            elif isinstance(ev, StreamDone):
+                break
+        return "".join(out)
+    try:
+        txt = await asyncio.wait_for(collect(), timeout)
+        m = re.search(r"\[.*\]", txt, re.S)
+        data = json.loads(m.group(0)) if m else []
+        return [d for d in data if isinstance(d, dict)][:6]
+    except Exception as e:  # external boundary
+        logger.warning("ai adjustments failed: %s", e)
+        return []
 
 
 def daily_chat() -> LlmChat:

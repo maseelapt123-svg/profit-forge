@@ -22,7 +22,7 @@ import yfinance as yf
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-from strategies import PLUGIN_DEFAULTS, PLUGIN_META, FEES, compute_signals, smc_analyze, atr, run_backtest, optimize, strategy_signals, trend_filtered, apply_filters, mtf_filtered, htf_trend, ema, rsi, vwap, sr_levels, fib_levels, detect_patterns  # noqa: E402
+from strategies import STRATEGIES, CONF_DEFAULT, confluence_detail, PLUGIN_DEFAULTS, PLUGIN_META, FEES, compute_signals, smc_analyze, atr, run_backtest, optimize, strategy_signals, trend_filtered, apply_filters, mtf_filtered, htf_trend, ema, rsi, vwap, sr_levels, fib_levels, detect_patterns  # noqa: E402
 import hfx  # noqa: E402
 import ai  # noqa: E402
 
@@ -279,7 +279,9 @@ async def patterns(category: str = "crypto", tf: str = "1h"):
 
 # ---------------------------------------------------------------- plugins
 PARAM_RANGES = {"swing": (1, 20), "length": (2, 200), "oversold": (1, 50), "overbought": (50, 99),
-                "fast": (2, 200), "slow": (3, 400), "signal": (2, 100), "mult": (0.5, 5)}
+                "fast": (2, 200), "slow": (3, 400), "signal": (2, 100), "mult": (0.5, 5),
+                "ema": (5, 100), "trend": (20, 300), "atr_len": (5, 50), "st_mult": (1, 6), "stoch": (5, 50), "lvl": (5, 40),
+                "threshold": (10, 50)}
 
 
 class PluginsIn(BaseModel):
@@ -391,13 +393,15 @@ class BacktestIn(BaseModel):
     trend_filter: bool = True
     breakeven: bool = True
     mtf: bool = False
+    conf_votes: int = Field(2, ge=1, le=10)
+    conf_score: float = Field(55, ge=40, le=90)
 
 
 @api.post("/backtest")
 async def backtest(body: BacktestIn, request: Request):
     u = await get_user(request)
     plugins = await user_plugins(u["user_id"])
-    if body.strategy != "combo" and body.strategy not in PLUGIN_DEFAULTS:
+    if body.strategy not in STRATEGIES:
         raise HTTPException(400, "Estratégia inválida")
     if not (0.1 <= body.risk_pct <= 10 and 0.3 <= body.sl_atr <= 10 and 0.5 <= body.rr <= 10 and body.capital > 0):
         raise HTTPException(400, "Parâmetros fora dos limites")
@@ -406,6 +410,7 @@ async def backtest(body: BacktestIn, request: Request):
         raise HTTPException(400, "Histórico insuficiente para backtest")
     fee = FEES[ASSET_INFO[body.symbol]["category"]]
     htf = await get_htf(body.symbol, body.tf) if body.mtf else None
+    plugins["_conf"] = {"min_votes": body.conf_votes, "min_score": body.conf_score}
     res = await asyncio.to_thread(run_backtest, df, body.strategy, plugins, body.sl_atr, body.rr, body.risk_pct, body.capital,
                                   fee, body.trend_filter, body.breakeven, body.mtf and htf is not None, htf)
     res.update({"symbol": body.symbol, "display": display(body.symbol), "tf": body.tf, "strategy": body.strategy,
@@ -679,7 +684,8 @@ async def reset_portfolio(request: Request):
 
 # ---------------------------------------------------------------- auto-trading bot (paper)
 BOT_DEFAULT = {"enabled": False, "symbols": ["BTC-USD", "ETH-USD", "EURUSD=X"], "tf": "1h", "strategy": "smc", "trend_filter": True, "mtf": True, "setups": [],
-               "risk_pct": 1.0, "sl_atr": 1.5, "rr": 2.0, "max_positions": 3, "ai_filter": False}
+               "risk_pct": 1.0, "sl_atr": 1.5, "rr": 2.0, "max_positions": 3, "ai_filter": False,
+               "conf_votes": 2, "conf_score": 55.0}
 
 
 class BotSetup(BaseModel):
@@ -704,6 +710,8 @@ class BotIn(BaseModel):
     trend_filter: bool = True
     mtf: bool = True
     ai_filter: bool = False
+    conf_votes: int = Field(2, ge=1, le=10)
+    conf_score: float = Field(55, ge=40, le=90)
     setups: List[BotSetup] = []
 
 
@@ -825,6 +833,7 @@ async def _run_bot_cycle(bot: dict) -> int:
     bot = await get_bot(uid)  # fresh state (last_bar) under the lock
     await check_exits(uid)
     plugins = await user_plugins(uid)
+    plugins["_conf"] = {"min_votes": bot.get("conf_votes", 2), "min_score": bot.get("conf_score", 55.0)}
     acc = await get_account(uid)
     opened = 0
     setups = bot.get("setups") or []
@@ -953,12 +962,12 @@ async def bot_put(body: BotIn, request: Request):
     u = await get_user(request)
     if body.tf not in TIMEFRAMES:
         raise HTTPException(400, "Timeframe inválido")
-    if body.strategy != "combo" and body.strategy not in PLUGIN_DEFAULTS:
+    if body.strategy not in STRATEGIES:
         raise HTTPException(400, "Estratégia inválida")
     syms = [s for s in body.symbols if s in ASSET_INFO]
     seen = set()
     for st in body.setups:
-        if st.symbol not in ASSET_INFO or st.tf not in TIMEFRAMES or (st.strategy != "combo" and st.strategy not in PLUGIN_DEFAULTS):
+        if st.symbol not in ASSET_INFO or st.tf not in TIMEFRAMES or st.strategy not in STRATEGIES:
             raise HTTPException(400, f"Setup inválido para {st.symbol} {st.tf}")
         if (st.symbol, st.tf) in seen:
             raise HTTPException(400, f"Setup duplicado: {st.symbol} {st.tf}")
@@ -1117,7 +1126,8 @@ async def daily_stats(uid: str, start: datetime, end: datetime) -> dict:
                   "breakeven": 1 / (1 + hfx.PAYOUT[hb["source"]]) * 100, "fixes": hb.get("fixes") or {},
                   "config": {k: hb.get(k) for k in ("source", "pairs", "expiry", "amount", "min_winrate", "strategy", "min_votes", "max_per_hour", "ai_filter")}})
     bot_s.update({"ai_rejected": await count("ai", False), "fix_skipped": 0, "fixes": mb.get("fixes") or {},
-                  "config": {k: mb.get(k) for k in ("symbols", "tf", "strategy", "risk_pct", "sl_atr", "rr", "max_positions", "trend_filter", "mtf", "ai_filter")}})
+                  "config": {**{k: mb.get(k) for k in ("symbols", "tf", "strategy", "risk_pct", "sl_atr", "rr", "max_positions", "trend_filter", "mtf", "ai_filter", "conf_votes", "conf_score")},
+                             "plugins_ativos": [k for k, v in (await user_plugins(uid)).items() if v.get("enabled")]}})
     return {"hfx": hfx_s, "bot": bot_s, "total_pnl": hfx_s["pnl"] + bot_s["pnl"], "total_trades": hfx_s["trades"] + bot_s["trades"]}
 
 
@@ -1157,14 +1167,171 @@ async def ai_daily_summary(body: DailyIn, request: Request):
                     yield f"data: {json.dumps({'t': ev.content})}\n\n"
                 elif isinstance(ev, StreamDone):
                     break
+            yield f"data: {json.dumps({'status': 'adjustments'})}\n\n"
+            raw = await ai.ai_adjustments("".join(full) + "\n\nDados:\n" + prompt, _adj_allowed_text())
+            hb, mb, plugins = await _configs(uid)
+            adjs, seen = [], set()
+            for a in raw:
+                c = sanitize_adj(a, hb, mb, plugins)
+                if c and (c["scope"], c["field"]) not in seen:
+                    seen.add((c["scope"], c["field"]))
+                    adjs.append({**c, "applied": False})
             await db.daily_summaries.update_one({"user_id": uid, "date": day}, {"$set": {
-                "text": "".join(full), "stats": _public_stats(st), "created_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+                "text": "".join(full), "stats": _public_stats(st), "adjustments": adjs,
+                "created_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
         except Exception as e:  # stream boundary: report to client
             logger.exception("AI daily error")
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         yield "data: [DONE]\n\n"
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+ADJ_SPEC = {
+    "hfx": {"expiry": ("choice", [1, 3]), "amount": ("num", 1, 1000), "min_winrate": ("num", 50, 90),
+            "max_per_hour": ("int", 1, 60), "min_votes": ("int", 1, 7), "strategy": ("choice", ["auto", "plugins"]),
+            "ai_filter": ("bool",), "remove_pairs": ("list",)},
+    "bot": {"risk_pct": ("num", 0.1, 5), "sl_atr": ("num", 0.5, 5), "rr": ("num", 0.5, 6), "max_positions": ("int", 1, 10),
+            "trend_filter": ("bool",), "mtf": ("bool",), "ai_filter": ("bool",), "strategy": ("choice", STRATEGIES),
+            "tf": ("choice", list(TIMEFRAMES)), "conf_votes": ("int", 1, 10), "conf_score": ("num", 40, 90),
+            "remove_symbols": ("list",), "plugin_on": ("plugin",), "plugin_off": ("plugin",)},
+}
+
+
+def _adj_allowed_text() -> str:
+    lines = ["Campos permitidos:"]
+    for scope, spec in ADJ_SPEC.items():
+        for f, t in spec.items():
+            rng = (f"um de {t[1]}" if t[0] == "choice" else f"entre {t[1]} e {t[2]}" if t[0] in ("num", "int") else
+                   "true/false" if t[0] == "bool" else "lista de símbolos atuais a remover" if t[0] == "list" else
+                   f"nome do plugin, um de {list(PLUGIN_DEFAULTS)}")
+            lines.append(f"- {scope}.{f}: {rng}")
+    return "\n".join(lines)
+
+
+def _fmt_val(v) -> str:
+    if isinstance(v, bool):
+        return "ligado" if v else "desligado"
+    if isinstance(v, list):
+        return ", ".join(hfx.PAIR_NAME.get(x) or display(x) for x in v) or "—"
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
+
+
+def sanitize_adj(a: dict, hb: dict, mb: dict, plugins: dict) -> Optional[dict]:
+    """Validate one AI adjustment against the allowed spec and the CURRENT config; returns it with from/to labels."""
+    scope, field, v = a.get("scope"), a.get("field"), a.get("value")
+    spec = ADJ_SPEC.get(scope, {}).get(field)
+    if not spec:
+        return None
+    cur = hb if scope == "hfx" else mb
+    kind = spec[0]
+    try:
+        if kind in ("num", "int"):
+            v = int(round(float(v))) if kind == "int" else round(float(v), 2)
+            if not spec[1] <= v <= spec[2]:
+                return None
+            frm = cur.get(field)
+        elif kind == "choice":
+            v = type(spec[1][0])(v)
+            if v not in spec[1]:
+                return None
+            frm = cur.get(field)
+        elif kind == "bool":
+            if not isinstance(v, bool):
+                return None
+            frm = cur.get(field)
+        elif kind == "list":
+            key = "pairs" if scope == "hfx" else "symbols"
+            v = [x for x in (v if isinstance(v, list) else [v]) if x in cur.get(key, [])]
+            if not v or len(v) >= len(cur.get(key, [])):
+                return None
+            frm = cur.get(key, [])
+            label = ai.LABELS[field]
+            return {"scope": scope, "field": field, "value": v, "label": label, "from": _fmt_val(frm),
+                    "to": _fmt_val([x for x in frm if x not in v]), "reason": str(a.get("reason", ""))[:120]}
+        else:  # plugin on/off
+            if v not in PLUGIN_DEFAULTS:
+                return None
+            on = field == "plugin_on"
+            if bool(plugins[v].get("enabled")) == on:
+                return None
+            return {"scope": scope, "field": field, "value": v, "label": f"Plugin {PLUGIN_META[v]['label']}",
+                    "from": _fmt_val(not on), "to": _fmt_val(on), "reason": str(a.get("reason", ""))[:120]}
+    except (TypeError, ValueError):
+        return None
+    if frm == v:
+        return None
+    return {"scope": scope, "field": field, "value": v, "label": ai.LABELS.get(field, field), "from": _fmt_val(frm),
+            "to": _fmt_val(v), "reason": str(a.get("reason", ""))[:120]}
+
+
+async def _configs(uid: str) -> tuple:
+    hb = {**hfx.HFX_BOT_DEFAULT, **(await db.hfx_bots.find_one({"user_id": uid}, {"_id": 0}) or {})}
+    return hb, await get_bot(uid), await user_plugins(uid)
+
+
+class ApplyAdjIn(BaseModel):
+    date: str
+    ids: List[int]
+
+
+@api.post("/ai/daily-summary/apply")
+async def ai_daily_apply(body: ApplyAdjIn, request: Request):
+    u = await get_user(request)
+    uid = u["user_id"]
+    doc = await db.daily_summaries.find_one({"user_id": uid, "date": body.date}, {"_id": 0})
+    if not doc or not doc.get("adjustments"):
+        raise HTTPException(404, "Sem ajustes para este dia")
+    adjs = doc["adjustments"]
+    hb, mb, plugins = await _configs(uid)
+    applied, skipped = [], 0
+    for i in sorted(set(body.ids)):
+        if i < 0 or i >= len(adjs) or adjs[i].get("applied"):
+            continue
+        a = sanitize_adj(adjs[i], hb, mb, plugins)
+        if not a:
+            skipped += 1
+            continue
+        coll = db.hfx_bots if a["scope"] == "hfx" else db.bots
+        if a["field"] in ("remove_pairs", "remove_symbols"):
+            key = "pairs" if a["scope"] == "hfx" else "symbols"
+            cur = hb if a["scope"] == "hfx" else mb
+            cur[key] = [x for x in cur[key] if x not in a["value"]]
+            await coll.update_one({"user_id": uid}, {"$set": {key: cur[key]}}, upsert=True)
+        elif a["field"] in ("plugin_on", "plugin_off"):
+            on = a["field"] == "plugin_on"
+            plugins[a["value"]]["enabled"] = on
+            await db.plugins.update_one({"user_id": uid}, {"$set": {f"plugins.{a['value']}.enabled": on}}, upsert=True)
+        else:
+            (hb if a["scope"] == "hfx" else mb)[a["field"]] = a["value"]
+            await coll.update_one({"user_id": uid}, {"$set": {a["field"]: a["value"]}}, upsert=True)
+        adjs[i]["applied"] = True
+        applied.append(a)
+        msg = f"Ajuste IA aplicado: {a['label']} {a['from']} → {a['to']}"
+        if a["scope"] == "hfx":
+            await db.bot_logs.insert_one({"log_id": uuid.uuid4().hex[:16], "user_id": uid, "kind": "fix", "msg": msg,
+                                          "scope": "hfx", "created_at": datetime.now(timezone.utc).isoformat()})
+        else:
+            await bot_log(uid, "fix", msg)
+    await db.daily_summaries.update_one({"user_id": uid, "date": body.date}, {"$set": {"adjustments": adjs}})
+    return {"applied": len(applied), "skipped": skipped, "adjustments": adjs}
+
+
+@api.get("/confluence")
+async def confluence_ep(request: Request, symbol: str, tf: str = "1h", votes: int = 2, score: float = 55):
+    u = await get_user(request)
+    if symbol not in ASSET_INFO or tf not in TIMEFRAMES:
+        raise HTTPException(400, "Ativo ou timeframe inválido")
+    plugins = await user_plugins(u["user_id"])
+    df = await get_df(symbol, tf)
+    d = await asyncio.to_thread(confluence_detail, df, plugins, {"min_votes": votes, "min_score": score})
+    sig = int(d["signals"][-2]) if len(df) > 1 else 0
+    return {"symbol": symbol, "display": display(symbol), "tf": tf, "signal": "BUY" if sig > 0 else "SELL" if sig < 0 else None,
+            "trend": d["trend"], "votes_up": d["votes_up"], "votes_dn": d["votes_dn"], "score_up": d["score_up"], "score_dn": d["score_dn"],
+            "plugins": [{"plugin": k, "label": PLUGIN_META[k]["label"], **v} for k, v in d["plugins"].items()],
+            "min_votes": votes, "min_score": score}
 
 
 @api.get("/ai/daily-summaries")

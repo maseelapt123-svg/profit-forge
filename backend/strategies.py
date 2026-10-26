@@ -9,7 +9,14 @@ PLUGIN_DEFAULTS = {
     "ema_cross": {"enabled": True, "fast": 9, "slow": 21},
     "macd": {"enabled": False, "fast": 12, "slow": 26, "signal": 9},
     "bollinger": {"enabled": False, "length": 20, "mult": 2.0},
+    "pullback": {"enabled": False, "ema": 21, "trend": 50},
+    "supertrend": {"enabled": False, "atr_len": 10, "st_mult": 3.0},
+    "stoch_rsi": {"enabled": False, "length": 14, "stoch": 14, "lvl": 20.0},
+    "adx": {"enabled": False, "length": 14, "threshold": 22.0},
+    "donchian": {"enabled": False, "length": 20},
 }
+CONF_DEFAULT = {"min_votes": 2, "min_score": 55.0, "horizon": 10, "memory": 3, "lookback": 300}
+STRATEGIES = list(PLUGIN_DEFAULTS) + ["combo", "confluence"]
 
 PLUGIN_META = {
     "smc": {"label": "Smart Money (SMC)", "desc": "Reteste de order blocks na direção do BOS/CHoCH",
@@ -22,6 +29,16 @@ PLUGIN_META = {
              "params": {"fast": "Rápida", "slow": "Lenta", "signal": "Sinal"}},
     "bollinger": {"label": "Bandas de Bollinger", "desc": "Regresso para dentro das bandas",
                   "params": {"length": "Período", "mult": "Desvios"}},
+    "pullback": {"label": "Pullback na Tendência", "desc": "Tendência EMA50>EMA200, recuo até à EMA21 e vela de rejeição a favor",
+                 "params": {"ema": "EMA do recuo", "trend": "EMA da tendência"}},
+    "supertrend": {"label": "Supertrend", "desc": "Mudança de direção do Supertrend (ATR)",
+                   "params": {"atr_len": "ATR", "st_mult": "Multiplicador"}},
+    "stoch_rsi": {"label": "Stoch RSI", "desc": "%K cruza %D a sair da zona extrema do Stoch RSI",
+                  "params": {"length": "RSI", "stoch": "Estocástico", "lvl": "Zona"}},
+    "adx": {"label": "ADX + DI", "desc": "+DI cruza -DI com ADX acima do limite (tendência forte)",
+            "params": {"length": "Período", "threshold": "ADX mínimo"}},
+    "donchian": {"label": "Rompimento Donchian", "desc": "Fecho acima/abaixo do canal das últimas N velas",
+                 "params": {"length": "Velas"}},
 }
 
 
@@ -133,16 +150,115 @@ def compute_signals(name: str, df: pd.DataFrame, cfg: dict) -> np.ndarray:
         up = (c > lo) & (c.shift() <= lo.shift())
         dn = (c < hi) & (c.shift() >= hi.shift())
         return np.where(up, 1, np.where(dn, -1, 0)).astype(float)
+    if name == "pullback":
+        e, t, e200 = ema(c, int(cfg["ema"])), ema(c, int(cfg["trend"])), ema(c, 200)
+        o, h, l = df["open"], df["high"], df["low"]
+        up = (t > e200) & (c > t) & (l <= e) & (c > e) & (c > o)
+        dn = (t < e200) & (c < t) & (h >= e) & (c < e) & (c < o)
+        raw = np.where(up, 1, np.where(dn, -1, 0))
+        prev = np.concatenate([[0], raw[:-1]])
+        return np.where(raw != prev, raw, 0).astype(float)
+    if name == "supertrend":
+        a = atr(df, int(cfg["atr_len"])).to_numpy()
+        hl2 = ((df["high"] + df["low"]) / 2).to_numpy()
+        cc = c.to_numpy(float)
+        m = float(cfg["st_mult"])
+        ub, lb = hl2 + m * a, hl2 - m * a
+        d = np.ones(len(cc))
+        fu, fl = ub.copy(), lb.copy()
+        for i in range(1, len(cc)):
+            fu[i] = ub[i] if ub[i] < fu[i - 1] or cc[i - 1] > fu[i - 1] else fu[i - 1]
+            fl[i] = lb[i] if lb[i] > fl[i - 1] or cc[i - 1] < fl[i - 1] else fl[i - 1]
+            d[i] = 1 if cc[i] > fu[i - 1] else -1 if cc[i] < fl[i - 1] else d[i - 1]
+        flip = np.zeros(len(cc))
+        flip[1:] = np.where(d[1:] != d[:-1], d[1:], 0)
+        return flip
+    if name == "stoch_rsi":
+        r = rsi(c, int(cfg["length"]))
+        n = int(cfg["stoch"])
+        lo, hi = r.rolling(n).min(), r.rolling(n).max()
+        k = ((r - lo) / (hi - lo).replace(0, np.nan) * 100).fillna(50).rolling(3).mean()
+        dd = k.rolling(3).mean()
+        lvl = float(cfg["lvl"])
+        up = (k > dd) & (k.shift() <= dd.shift()) & (dd < lvl)
+        dn = (k < dd) & (k.shift() >= dd.shift()) & (dd > 100 - lvl)
+        return np.where(up, 1, np.where(dn, -1, 0)).astype(float)
+    if name == "adx":
+        n = int(cfg["length"])
+        h, l = df["high"], df["low"]
+        upm, dnm = h.diff(), -l.diff()
+        pdm = pd.Series(np.where((upm > dnm) & (upm > 0), upm, 0.0), index=df.index)
+        ndm = pd.Series(np.where((dnm > upm) & (dnm > 0), dnm, 0.0), index=df.index)
+        tr = atr(df, n).replace(0, np.nan)
+        pdi = pdm.ewm(alpha=1 / n, adjust=False).mean() / tr * 100
+        ndi = ndm.ewm(alpha=1 / n, adjust=False).mean() / tr * 100
+        dx = ((pdi - ndi).abs() / (pdi + ndi).replace(0, np.nan) * 100).fillna(0)
+        adx_ = dx.ewm(alpha=1 / n, adjust=False).mean()
+        strong = (adx_ > float(cfg["threshold"])).to_numpy()
+        return np.where(strong, _cross(pdi.fillna(0), ndi.fillna(0)), 0).astype(float)
+    if name == "donchian":
+        n = int(cfg["length"])
+        hh, ll = df["high"].rolling(n).max().shift(), df["low"].rolling(n).min().shift()
+        up = (c > hh) & (c.shift() <= hh.shift())
+        dn = (c < ll) & (c.shift() >= ll.shift())
+        return np.where(up, 1, np.where(dn, -1, 0)).astype(float)
     raise ValueError(name)
 
 
+def _persist(sig: np.ndarray, memory: int) -> np.ndarray:
+    """A plugin keeps its vote for `memory` bars after firing (signals rarely fire on the very same bar)."""
+    return pd.Series(sig).replace(0, np.nan).ffill(limit=max(0, memory - 1)).fillna(0).to_numpy()
+
+
+def plugin_weight(df: pd.DataFrame, sig: np.ndarray, horizon: int, lookback: int) -> np.ndarray:
+    """Rolling win rate (0..1) of a plugin's past signals, using only outcomes already known at each bar.
+    Win = price moved in the signal direction `horizon` bars later. 0.5 until 5 signals are known."""
+    c = df["close"].to_numpy(float)
+    out = np.zeros(len(c))
+    out[:-horizon] = np.sign(c[horizon:] - c[:-horizon])
+    res = sig * out
+    win = pd.Series((res > 0).astype(float)).shift(horizon).fillna(0).rolling(lookback, min_periods=1).sum()
+    cnt = pd.Series((sig != 0).astype(float)).shift(horizon).fillna(0).rolling(lookback, min_periods=1).sum()
+    return np.where(cnt >= 5, (win / cnt.replace(0, np.nan)).fillna(0.5), 0.5)
+
+
+def confluence_detail(df: pd.DataFrame, plugins: dict, conf: Optional[dict] = None) -> dict:
+    conf = {**CONF_DEFAULT, **(conf or {})}
+    names = [k for k, v in plugins.items() if k in PLUGIN_DEFAULTS and v.get("enabled")]
+    n = len(df)
+    up_n, dn_n, up_w, dn_w = (np.zeros(n) for _ in range(4))
+    per = {}
+    for name in names:
+        s = compute_signals(name, df, plugins[name])
+        v = _persist(s, int(conf["memory"]))
+        w = plugin_weight(df, s, int(conf["horizon"]), int(conf["lookback"]))
+        up_n += v > 0
+        dn_n += v < 0
+        up_w += (v > 0) * w
+        dn_w += (v < 0) * w
+        per[name] = {"vote": int(v[-2]) if n > 1 else 0, "weight": float(w[-1] * 100)}
+    trend = np.where(df["close"] > ema(df["close"], 200), 1, -1)
+    s_up, s_dn = up_w / np.maximum(up_n, 1) * 100, dn_w / np.maximum(dn_n, 1) * 100
+    mv, ms = int(conf["min_votes"]), float(conf["min_score"])
+    cond_up = (up_n >= mv) & (dn_n == 0) & (s_up >= ms) & (trend == 1)
+    cond_dn = (dn_n >= mv) & (up_n == 0) & (s_dn >= ms) & (trend == -1)
+    raw = np.where(cond_up, 1, np.where(cond_dn, -1, 0))
+    prev = np.concatenate([[0], raw[:-1]])
+    sig = np.where(raw != prev, raw, 0).astype(float)
+    return {"signals": sig, "plugins": per, "score_up": float(s_up[-2]) if n > 1 else 0.0,
+            "score_dn": float(s_dn[-2]) if n > 1 else 0.0, "votes_up": int(up_n[-2]) if n > 1 else 0,
+            "votes_dn": int(dn_n[-2]) if n > 1 else 0, "trend": int(trend[-1]), "conf": conf}
+
+
 def strategy_signals(df: pd.DataFrame, strategy: str, plugins: dict) -> np.ndarray:
+    if strategy == "confluence":
+        return confluence_detail(df, plugins, plugins.get("_conf"))["signals"]
     if strategy != "combo":
         return compute_signals(strategy, df, plugins[strategy])
     trend = np.where(df["close"] > ema(df["close"], 200), 1, -1)
     total = np.zeros(len(df))
     for name, cfg in plugins.items():
-        if cfg.get("enabled"):
+        if name in PLUGIN_DEFAULTS and cfg.get("enabled"):
             total += compute_signals(name, df, cfg)
     sig = np.sign(total)
     return np.where(sig == trend, sig, 0)
@@ -177,7 +293,7 @@ def mtf_filtered(df: pd.DataFrame, sig: np.ndarray, htf: Optional[pd.DataFrame])
 
 
 def apply_filters(df, sig, strategy, trend_filter, mtf, htf):
-    if trend_filter and strategy != "combo":
+    if trend_filter and strategy not in ("combo", "confluence"):
         sig = trend_filtered(df, sig)
     if mtf:
         sig = mtf_filtered(df, sig, htf)
@@ -199,11 +315,11 @@ def optimize(df, plugins, fee, risk_pct=1.0, capital=10000.0, split=0.7, htf=Non
     if htf is not None and not htf.empty:
         variants += [(True, True), (False, True)]
     results = []
-    for strat in list(PLUGIN_DEFAULTS.keys()) + ["combo"]:
+    for strat in STRATEGIES:
         raw_tr = strategy_signals(train, strat, plugins)
         raw_te = strategy_signals(test, strat, plugins)
         for tfilt, mtf in variants:
-            if strat == "combo" and not tfilt:
+            if strat in ("combo", "confluence") and not tfilt:
                 continue
             s_tr = apply_filters(train, raw_tr, strat, tfilt, mtf, htf)
             s_te = apply_filters(test, raw_te, strat, tfilt, mtf, htf).copy()

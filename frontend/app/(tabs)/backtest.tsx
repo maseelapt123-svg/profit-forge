@@ -11,15 +11,8 @@ import { Button, ChipRow, Segmented } from "@/src/components/ui";
 import { usesNativeTabs } from "@/src/navigation";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 import { CATEGORIES, Category } from "@/src/markets";
+import { STRATS } from "@/src/strategies";
 
-const STRATS = [
-  { value: "smc", label: "Smart Money" },
-  { value: "combo", label: "Combo plugins" },
-  { value: "ema_cross", label: "EMA Cross" },
-  { value: "rsi", label: "RSI" },
-  { value: "macd", label: "MACD" },
-  { value: "bollinger", label: "Bollinger" },
-];
 const TFS = [
   { value: "1m", label: "1m" },
   { value: "5m", label: "5m" },

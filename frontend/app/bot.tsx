@@ -6,25 +6,19 @@ import { ActivityIndicator, Pressable, ScrollView, Switch, Text, View } from "re
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api, money } from "@/src/api";
+import { STRATS } from "@/src/strategies";
+import { ConfluencePanel } from "@/src/components/confluence-panel";
 import { useToast } from "@/src/components/toast";
 import { Button, Center, ChipRow, haptic } from "@/src/components/ui";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type Setup = { symbol: string; tf: string; strategy: string; sl_atr: number; rr: number; trend_filter: boolean; mtf: boolean };
-type Bot = { setups?: Setup[]; mtf: boolean; ai_filter: boolean; trend_filter: boolean; enabled: boolean; symbols: string[]; tf: string; strategy: string; risk_pct: number; sl_atr: number; rr: number; max_positions: number; last_run?: string };
+type Bot = { setups?: Setup[]; mtf: boolean; ai_filter: boolean; conf_votes: number; conf_score: number; trend_filter: boolean; enabled: boolean; symbols: string[]; tf: string; strategy: string; risk_pct: number; sl_atr: number; rr: number; max_positions: number; last_run?: string };
 type Resp = {
   bot: Bot; logs: { log_id: string; kind: string; msg: string; created_at: string }[];
   stats: { trades: number; pnl: number; wins: number; open: number }; assets: { symbol: string; display: string; category: string }[];
 };
 
-const STRATS = [
-  { value: "combo", label: "Combo plugins" },
-  { value: "smc", label: "Smart Money" },
-  { value: "ema_cross", label: "EMA Cross" },
-  { value: "rsi", label: "RSI" },
-  { value: "macd", label: "MACD" },
-  { value: "bollinger", label: "Bollinger" },
-];
 const TFS = [
   { value: "1m", label: "1m" },
   { value: "5m", label: "5m" },
@@ -141,6 +135,18 @@ export default function BotScreen() {
 
           <Text style={styles.section}>Estratégia</Text>
           <ChipRow options={STRATS} value={cfg.strategy} onChange={(v) => upd({ strategy: v })} testID="bot-strategy" />
+          {cfg.strategy === "confluence" && (
+            <View testID="bot-confluence">
+              <Text style={[styles.note, { paddingHorizontal: 16, marginBottom: 8 }]}>
+                Cada plugin ativo vota e vale o seu acerto recente. Só entra quando o mínimo de plugins concorda, nenhum discorda, a média dos pesos atinge a pontuação e o preço está a favor da EMA200.
+              </Text>
+              <View style={styles.steps}>
+                <Step label="Mín. plugins" value={cfg.conf_votes} step={1} min={1} max={10} onChange={(v) => upd({ conf_votes: v })} testID="bot-conf-votes" />
+                <Step label="Pontuação mín." value={cfg.conf_score} step={5} min={40} max={90} onChange={(v) => upd({ conf_score: v })} testID="bot-conf-score" suffix="%" />
+              </View>
+              {cfg.symbols[0] && <ConfluencePanel symbol={cfg.symbols[0]} tf={cfg.tf} votes={cfg.conf_votes} score={cfg.conf_score} />}
+            </View>
+          )}
           <Text style={styles.section}>Timeframe</Text>
           <ChipRow options={TFS} value={cfg.tf} onChange={(v) => upd({ tf: v })} testID="bot-tf" />
           <ChipRow
@@ -249,7 +255,7 @@ const useStyles = makeStyles((c) => ({
   step: { flex: 1, backgroundColor: c.surfaceSecondary, borderRadius: 12, borderWidth: 1, borderColor: c.border, padding: 8, gap: 4 },
   stepLabel: { color: c.muted, fontFamily: fonts.text, fontSize: 11, textAlign: "center" },
   stepRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  stepBtn: { width: 36, height: 36, borderRadius: 8, backgroundColor: c.surfaceTertiary, alignItems: "center", justifyContent: "center" },
+  stepBtn: { width: 44, height: 44, borderRadius: 8, backgroundColor: c.surfaceTertiary, alignItems: "center", justifyContent: "center" },
   stepBtnText: { color: c.onSurface, fontFamily: fonts.display, fontSize: 18 },
   stepValue: { color: c.onSurface, fontFamily: fonts.display, fontSize: 17 },
   note: { color: c.muted, fontFamily: fonts.text, fontSize: 12, lineHeight: 18 },

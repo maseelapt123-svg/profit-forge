@@ -53,3 +53,6 @@ Follow-ups: "Faz trades automaticamente", "Está com resultados negativos", "Bai
 - Backlog: real broker integration; AI filter approval-rate stat; split server.py.
 - Daily AI Summary (/daily): on-demand (Gerar) per UTC day, GET /api/ai/daily-stats?date, POST /api/ai/daily-summary (SSE), GET /api/ai/daily-summaries (history). Entry points: Home header icon, Ferramentas, both bot screens.
 - Bug fix: /daily was not registered in Stack.Protected → app landed on it when logged out/at start. Registered.
+- New main-bot plugins: pullback, supertrend, stoch_rsi, adx, donchian. Weighted confluence strategy "confluence" (conf_votes, conf_score; weights = rolling hit rate per plugin), GET /api/confluence panel in /bot.
+- Daily summary now also produces structured adjustments (validated by ADJ_SPEC) shown before→after; POST /api/ai/daily-summary/apply {date, ids}.
+- PENDING: testing_agent run for these (only curl-verified).

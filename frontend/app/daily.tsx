@@ -1,5 +1,5 @@
 import { Ionicons } from "@react-native-vector-icons/ionicons";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
@@ -9,12 +9,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api, fmt, money, streamSSE } from "@/src/api";
 import { MarkdownLite } from "@/src/components/markdown";
 import { useToast } from "@/src/components/toast";
-import { Button, ChipRow } from "@/src/components/ui";
+import { Button, ChipRow, haptic } from "@/src/components/ui";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type BotStats = { trades: number; wins: number; winrate: number; pnl: number; ai_rejected: number };
 type DayStats = { date: string; hfx: BotStats; bot: BotStats; total_pnl: number; total_trades: number };
-type Summary = { date: string; text: string; stats: DayStats; created_at: string };
+type Adj = { scope: "hfx" | "bot"; field: string; label: string; from: string; to: string; reason: string; applied?: boolean };
+type Summary = { date: string; text: string; stats: DayStats; created_at: string; adjustments?: Adj[] };
 
 function isoDay(offset: number) {
   const d = new Date();
@@ -129,6 +130,8 @@ export default function Daily() {
             />
           </View>
 
+          {saved && !loading && <Adjustments date={date} items={saved.adjustments ?? []} />}
+
           <Text style={styles.section}>Histórico</Text>
           {list.isLoading ? (
             <ActivityIndicator color={colors.brandPrimary} />
@@ -149,6 +152,77 @@ export default function Daily() {
           )}
         </View>
       </ScrollView>
+    </View>
+  );
+}
+
+function Adjustments({ date, items }: { date: string; items: Adj[] }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const toast = useToast();
+  const qc = useQueryClient();
+  const pending = items.map((a, i) => (a.applied ? -1 : i)).filter((i) => i >= 0);
+  const [sel, setSel] = useState<number[]>(pending);
+  useEffect(() => setSel(items.map((a, i) => (a.applied ? -1 : i)).filter((i) => i >= 0)), [items]);
+  const apply = useMutation({
+    mutationFn: () => api<{ applied: number; skipped: number }>("/ai/daily-summary/apply", { method: "POST", body: { date, ids: sel } }),
+    onSuccess: (r) => {
+      haptic("medium");
+      toast(r.skipped ? `${r.applied} ajuste(s) aplicado(s) · ${r.skipped} já não se aplicava(m)` : `${r.applied} ajuste(s) aplicado(s) aos robôs`, "success");
+      qc.invalidateQueries({ queryKey: ["daily-summaries"] });
+      qc.invalidateQueries({ queryKey: ["bot"] });
+      qc.invalidateQueries({ queryKey: ["hfx-bot"] });
+      qc.invalidateQueries({ queryKey: ["plugins"] });
+    },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const toggle = (i: number) => setSel((s) => (s.includes(i) ? s.filter((x) => x !== i) : [...s, i]));
+  return (
+    <View style={{ gap: 8 }} testID="daily-adjustments">
+      <Text style={styles.section}>Ajustes sugeridos para amanhã</Text>
+      {items.length === 0 ? (
+        <Text style={styles.muted}>A IA não sugeriu alterações de configuração para este dia.</Text>
+      ) : (
+        <>
+          {items.map((a, i) => {
+            const on = sel.includes(i);
+            return (
+              <Pressable
+                key={i}
+                disabled={a.applied}
+                onPress={() => toggle(i)}
+                style={[styles.adj, on && { borderColor: colors.brandPrimary }, a.applied && { opacity: 0.6 }]}
+                testID={`daily-adj-${i}`}
+              >
+                <Ionicons
+                  name={a.applied ? "checkmark-done-circle" : on ? "checkbox" : "square-outline"}
+                  size={22}
+                  color={a.applied ? colors.success : on ? colors.brandPrimary : colors.muted}
+                />
+                <View style={{ flex: 1, gap: 2 }}>
+                  <Text style={styles.histTitle}>
+                    {a.scope === "hfx" ? "HFX" : "Principal"} · {a.label}
+                  </Text>
+                  <Text style={styles.adjChange}>
+                    {a.from} → <Text style={{ color: colors.brandPrimary }}>{a.to}</Text>
+                  </Text>
+                  {!!a.reason && <Text style={styles.muted}>{a.reason}</Text>}
+                  {a.applied && <Text style={[styles.muted, { color: colors.success }]}>Aplicado</Text>}
+                </View>
+              </Pressable>
+            );
+          })}
+          {pending.length > 0 && (
+            <Button
+              label={`Aplicar ${sel.length} ajuste(s)`}
+              onPress={() => apply.mutate()}
+              loading={apply.isPending}
+              disabled={sel.length === 0}
+              testID="daily-apply-button"
+            />
+          )}
+        </>
+      )}
     </View>
   );
 }
@@ -202,4 +276,6 @@ const useStyles = makeStyles((c) => ({
   muted: { color: c.muted, fontFamily: fonts.text, fontSize: 12, lineHeight: 17 },
   hist: { flexDirection: "row", alignItems: "center", backgroundColor: c.surfaceSecondary, borderRadius: 12, borderWidth: 1, borderColor: c.border, padding: 12, minHeight: 56 },
   histTitle: { color: c.onSurface, fontFamily: fonts.displaySemi, fontSize: 14 },
+  adj: { flexDirection: "row", gap: 10, alignItems: "flex-start", backgroundColor: c.surfaceSecondary, borderRadius: 12, borderWidth: 1, borderColor: c.border, padding: 12, minHeight: 56 },
+  adjChange: { color: c.onSurfaceTertiary, fontFamily: fonts.display, fontSize: 15 },
 }));
