@@ -83,6 +83,34 @@ def review_prompt(scope: str, an: dict, fixes: dict, config: dict) -> str:
             f"Últimas perdas (contexto de entrada):\n{losses}")
 
 
+DAILY_SYSTEM = (
+    "És um gestor de trading que escreve o relatório diário dos robôs de uma conta simulada, em português de Portugal. "
+    "Usa os números fornecidos e valores em dólares ($). Estrutura em markdown simples: **Resultado do dia** (1-2 frases), "
+    "**Robô HFX** e **Robô principal** (o que correu bem/mal, melhores e piores pares/estratégias — omite a secção se o robô "
+    "não operou), **Ajustes para amanhã** (lista numerada de 3 a 5 ajustes concretos: definição, valor exato, par/horário a "
+    "evitar ou priorizar), **Nota de risco** (1 frase). Não uses nomes técnicos de chaves nem backticks. Máximo ~280 palavras. "
+    "Nunca prometas lucro."
+)
+
+
+def daily_prompt(date: str, stats: dict) -> str:
+    def block(name: str, s: dict) -> str:
+        if not s["trades"]:
+            return f"{name}: não operou neste dia.\n"
+        groups = "\n".join(f"  - {g['label']}: {g['trades']} ops, {g['winrate']:.0f}% acerto, {g['pnl']:+.2f} $" for g in s["groups"])
+        return (f"{name}: {s['trades']} operações, {s['wins']} ganhos, acerto {s['winrate']:.1f}%, resultado {s['pnl']:+.2f} $, "
+                f"entradas rejeitadas pela IA: {s['ai_rejected']}, ignoradas pela correção automática: {s['fix_skipped']}.\n"
+                f"  Por par/estratégia:\n{groups}\n  Horas com perdas (UTC): {s['bad_hours'] or 'nenhuma'}\n"
+                f"  Configuração: {labeled(s['config'])}\n  Correções ativas: {labeled(s['fixes'])}\n")
+    extra = f"Ponto de equilíbrio do acerto HFX: {stats['hfx']['breakeven']:.1f}%\n"
+    return f"Relatório do dia {date} (UTC).\n{extra}{block('Robô HFX', stats['hfx'])}{block('Robô principal', stats['bot'])}"
+
+
+def daily_chat() -> LlmChat:
+    return LlmChat(api_key=os.environ["EMERGENT_LLM_KEY"], session_id=f"daily_{uuid.uuid4().hex}",
+                   system_message=DAILY_SYSTEM).with_model("openai", "gpt-5.4")
+
+
 def review_chat() -> LlmChat:
     return LlmChat(api_key=os.environ["EMERGENT_LLM_KEY"], session_id=f"review_{uuid.uuid4().hex}",
                    system_message=REVIEW_SYSTEM).with_model("openai", "gpt-5.4")

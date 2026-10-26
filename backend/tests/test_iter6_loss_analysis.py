@@ -15,7 +15,7 @@ mdb = MongoClient(os.environ.get("MONGO_URL"))[os.environ.get("DB_NAME")]
 NOW_H = datetime.now(timezone.utc).hour
 
 
-def hfx_doc(pair, rule, label, won, hour, aligned, vol, origin="bot", days_ago=2):
+def hfx_doc(pair, rule, label, won, hour, aligned, vol, origin="bot", days_ago=0.01):  # bot-scope analysis only looks at last 24h
     ts = time.time() - days_ago * 86400
     return {"trade_id": "TEST_" + uuid.uuid4().hex[:10], "user_id": UID, "pair": pair, "source": "otc",
             "direction": "CALL", "amount": 10.0, "payout": 0.85, "expiry": 1, "entry_price": 1.1,

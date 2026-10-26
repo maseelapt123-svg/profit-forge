@@ -199,6 +199,7 @@ export default function BotScreen() {
 
           <View style={{ paddingHorizontal: 16, marginTop: 8 }}>
             <Button label="Ver Análise de Perdas" variant="ghost" onPress={() => router.push({ pathname: "/analysis", params: { scope: "bot" } })} testID="bot-open-analysis" />
+            <Button label="Resumo Diário IA" variant="ghost" onPress={() => router.push("/daily")} testID="bot-open-daily" />
           </View>
           <Text style={styles.section}>Atividade</Text>
           <View style={{ paddingHorizontal: 16 }} testID="bot-logs">

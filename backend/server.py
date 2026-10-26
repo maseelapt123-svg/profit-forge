@@ -1068,6 +1068,111 @@ async def ai_loss_review_last(scope: str, request: Request):
     return doc or {"text": "", "created_at": None}
 
 
+def _day_range(date: Optional[str]) -> tuple:
+    try:
+        d = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc) if date else \
+            datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    except ValueError:
+        raise HTTPException(400, "Data inválida (AAAA-MM-DD)")
+    return d.strftime("%Y-%m-%d"), d, d + timedelta(days=1)
+
+
+def _group_stats(rows: List[tuple]) -> dict:
+    """rows = (label, won, pnl, hour)"""
+    groups: Dict[str, list] = {}
+    hours: Dict[int, float] = {}
+    for label, won, pnl, hour in rows:
+        groups.setdefault(label, []).append((won, pnl))
+        if hour is not None:
+            hours[hour] = hours.get(hour, 0.0) + pnl
+    n = len(rows)
+    wins = sum(1 for r in rows if r[1])
+    g = [{"label": k, "trades": len(v), "winrate": sum(1 for w, _ in v if w) / len(v) * 100, "pnl": sum(p for _, p in v)}
+         for k, v in groups.items()]
+    g.sort(key=lambda x: x["pnl"])
+    return {"trades": n, "wins": wins, "winrate": wins / n * 100 if n else 0.0, "pnl": sum(r[2] for r in rows),
+            "groups": g, "bad_hours": ", ".join(f"{h}h ({p:+.2f} $)" for h, p in sorted(hours.items()) if p < 0)}
+
+
+async def daily_stats(uid: str, start: datetime, end: datetime) -> dict:
+    s_iso, e_iso = start.isoformat(), end.isoformat()
+    ht = await db.hfx_trades.find({"user_id": uid, "origin": "bot", "status": {"$in": ["won", "lost", "tie"]},
+                                   "opened_ts": {"$gte": start.timestamp(), "$lt": end.timestamp()}}, {"_id": 0}).to_list(5000)
+    hfx_s = _group_stats([(f"{hfx.pair_display(t['pair'], t['source'])} · {t.get('rule_label') or '?'} · {t['expiry']}m",
+                           t["status"] == "won", t.get("profit", 0.0), (t.get("ctx") or {}).get("hour")) for t in ht])
+    hb = {**hfx.HFX_BOT_DEFAULT, **(await db.hfx_bots.find_one({"user_id": uid}, {"_id": 0}) or {})}
+    pos = await db.positions.find({"user_id": uid, "source": "bot", "status": "closed",
+                                   "closed_at": {"$gte": s_iso, "$lt": e_iso}}, {"_id": 0}).to_list(5000)
+    bot_s = _group_stats([(f"{display(p['symbol'])} {str(p.get('tf') or '').upper()}", p["pnl"] > 0, p["pnl"],
+                           (p.get("ctx") or {}).get("hour")) for p in pos])
+    mb = await get_bot(uid)
+
+    async def count(kind: str, hfx_scope: bool, prefix: str = "") -> int:
+        q = {"user_id": uid, "kind": kind, "created_at": {"$gte": s_iso, "$lt": e_iso},
+             "scope": "hfx" if hfx_scope else {"$ne": "hfx"}}
+        if prefix:
+            q["msg"] = {"$regex": prefix}
+        return await db.bot_logs.count_documents(q)
+    hfx_s.update({"ai_rejected": await count("ai", True), "fix_skipped": await count("skip", True, "correção automática"),
+                  "breakeven": 1 / (1 + hfx.PAYOUT[hb["source"]]) * 100, "fixes": hb.get("fixes") or {},
+                  "config": {k: hb.get(k) for k in ("source", "pairs", "expiry", "amount", "min_winrate", "strategy", "min_votes", "max_per_hour", "ai_filter")}})
+    bot_s.update({"ai_rejected": await count("ai", False), "fix_skipped": 0, "fixes": mb.get("fixes") or {},
+                  "config": {k: mb.get(k) for k in ("symbols", "tf", "strategy", "risk_pct", "sl_atr", "rr", "max_positions", "trend_filter", "mtf", "ai_filter")}})
+    return {"hfx": hfx_s, "bot": bot_s, "total_pnl": hfx_s["pnl"] + bot_s["pnl"], "total_trades": hfx_s["trades"] + bot_s["trades"]}
+
+
+def _public_stats(st: dict) -> dict:
+    return {k: ({kk: vv for kk, vv in v.items() if kk not in ("config", "fixes")} if isinstance(v, dict) else v) for k, v in st.items()}
+
+
+@api.get("/ai/daily-stats")
+async def ai_daily_stats(request: Request, date: Optional[str] = None):
+    u = await get_user(request)
+    day, start, end = _day_range(date)
+    return {"date": day, **_public_stats(await daily_stats(u["user_id"], start, end))}
+
+
+class DailyIn(BaseModel):
+    date: Optional[str] = None
+
+
+@api.post("/ai/daily-summary")
+async def ai_daily_summary(body: DailyIn, request: Request):
+    from emergentintegrations.llm.chat import UserMessage, TextDelta, StreamDone
+    u = await get_user(request)
+    uid = u["user_id"]
+    day, start, end = _day_range(body.date)
+    st = await daily_stats(uid, start, end)
+    if st["total_trades"] == 0:
+        raise HTTPException(400, "Os robôs não fecharam operações neste dia")
+    chat = ai.daily_chat()
+    prompt = ai.daily_prompt(day, st)
+
+    async def gen():
+        full = []
+        try:
+            async for ev in chat.stream_message(UserMessage(text=prompt)):
+                if isinstance(ev, TextDelta):
+                    full.append(ev.content)
+                    yield f"data: {json.dumps({'t': ev.content})}\n\n"
+                elif isinstance(ev, StreamDone):
+                    break
+            await db.daily_summaries.update_one({"user_id": uid, "date": day}, {"$set": {
+                "text": "".join(full), "stats": _public_stats(st), "created_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+        except Exception as e:  # stream boundary: report to client
+            logger.exception("AI daily error")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield "data: [DONE]\n\n"
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@api.get("/ai/daily-summaries")
+async def ai_daily_summaries(request: Request):
+    u = await get_user(request)
+    return await db.daily_summaries.find({"user_id": u["user_id"]}, {"_id": 0, "user_id": 0}).sort("date", -1).to_list(60)
+
+
 @api.post("/bot/run")
 async def bot_run_now(request: Request):
     u = await get_user(request)

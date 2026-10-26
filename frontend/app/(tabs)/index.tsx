@@ -30,15 +30,17 @@ export default function Markets() {
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <View style={styles.titleRow}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.title}>Mercados</Text>
-            <Text style={styles.subtitle}>Preços ao vivo · atualiza a cada 30s</Text>
+            <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit>Mercados</Text>
+            <Text style={styles.subtitle} numberOfLines={1}>Preços ao vivo · atualiza a cada 30s</Text>
           </View>
+          <Pressable testID="open-daily-button" style={styles.hdrBtn} onPress={() => router.push("/daily")}>
+            <Ionicons name="newspaper" size={18} color={colors.brandPrimary} />
+          </Pressable>
           <Pressable testID="open-signals-button" style={styles.hdrBtn} onPress={() => router.push("/signals")}>
             <Ionicons name="flash" size={18} color={colors.brandPrimary} />
           </Pressable>
-          <Pressable testID="open-tools-button" style={styles.hdrBtnWide} onPress={() => router.push("/tools")}>
+          <Pressable testID="open-tools-button" style={styles.hdrBtn} onPress={() => router.push("/tools")}>
             <Ionicons name="construct" size={18} color={colors.brandPrimary} />
-            <Text style={styles.hdrBtnText}>Ferramentas</Text>
           </Pressable>
         </View>
         <View style={{ marginTop: 12 }}>
@@ -95,8 +97,6 @@ const useStyles = makeStyles((c) => ({
   title: { color: c.onSurface, fontFamily: fonts.display, fontSize: 32 },
   titleRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   hdrBtn: { width: 44, height: 44, borderRadius: 22, borderWidth: 1, borderColor: c.brandPrimary, alignItems: "center", justifyContent: "center" },
-  hdrBtnWide: { flexDirection: "row", gap: 6, height: 44, paddingHorizontal: 14, borderRadius: 22, borderWidth: 1, borderColor: c.brandPrimary, alignItems: "center" },
-  hdrBtnText: { color: c.brandPrimary, fontFamily: fonts.displaySemi, fontSize: 15 },
   subtitle: { color: c.muted, fontFamily: fonts.text, fontSize: 12 },
   row: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: c.divider },
   sym: { color: c.onSurface, fontFamily: fonts.display, fontSize: 17 },

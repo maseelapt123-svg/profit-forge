@@ -1,0 +1,35 @@
+{
+  "summary": "Tested the bug fix for 'stuck on Resumo Diário' and the full Daily AI Summary feature. BUG FIXED: when logged out, the root URL and the /daily deep link both redirect to /login (login-screen). With the auth token set, the app lands on markets-screen at startup and after reload, never on daily-screen. Navigation to daily-screen works from all 4 entry points (Home open-daily-button, Ferramentas tool-daily, /bot bot-open-daily, /hfx-bot hfx-bot-open-daily), and daily-back-button returns to the screen it came from. Opening the /daily deep link with no history and tapping back goes to the markets tab. Daily screen: 7 day chips, stats cards with correct seeded values (HFX -$4,50 6 ops 50%, bot -$2,50 3 ops 67%, total -$7,00). The generate button streams text (visible within 4s, about 1.8k chars, includes 'Ajustes para amanhã'). daily-history-<UTC date> appears after generation and the button label changes to 'Gerar de novo'. On a day with no trades the button is disabled (aria-disabled=true) and the 'não fecharam operações' message shows. Tapping a history entry reloads the saved text. Backend: test_iter8_daily_summary.py passes 16/16 when run serially. Regression: iter6 (13/13, after a stale-seed fix) and iter7 AI features pass. /bot, /hfx-bot and /analysis load, and Coach IA text renders.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "tests infra", "issue": "pytest.ini enables xdist (-n --dist loadscope). Run that way, test_iter8_daily_summary.py and test_iter6 seed the shared DB at the same time, which double-counts trades (12 vs 6) and causes false failures. Run with -n 0 for these DB-seeding suites."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Markets (Home) header", "issues": ["At 375px the title 'Mercados' wraps mid-word to 'Mercad / os' and the subtitle wraps onto 3 lines. The new open-daily-button (a third 44px header button, next to the wide 'Ferramentas' button) leaves too little width for the title. Reference: /app/frontend/app/(tabs)/index.tsx:31-45. Options: make Ferramentas icon-only on narrow screens, put the buttons on their own row, or add numberOfLines={1}/adjustsFontSizeToFit to the title."]},
+      {"screen": "Daily", "issues": ["Minor: the day chips and server date use UTC, so for users in UTC-3 (Brazil) 'Hoje' moves to the next day after 21:00 local time. This matches the spec (server is UTC) but may confuse users."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iter8_daily_summary.py", "/app/backend/tests/test_iter6_loss_analysis.py", "/app/backend/tests/manual_seed_daily.py", "/app/test_reports/pytest/pytest_iter7_daily.xml"],
+  "action_items": [
+    "Fix the Markets header title wrapping ('Mercad/os') at 375px width caused by the added open-daily-button (app/(tabs)/index.tsx).",
+    "Optional: set addopts so DB-seeding suites run with -n 0, or mark them xdist_group, to avoid parallel seed collisions."
+  ],
+  "critical_code_review_comments": [
+    "_layout.tsx: 'daily' is now inside Stack.Protected guard={!!user}. This is the correct fix and is verified.",
+    "daily.tsx: the back button falls back to router.replace('/') when canGoBack() is false. This is good and is verified on the deep link.",
+    "daily.tsx is 205 lines, uses testIDs, and handles loading, empty and error states (toast on error). No deprecated expo packages."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter6_loss_analysis.py (stale seed: bot-scope HFX analysis is limited to the last 24h, so seed days_ago changed 2 -> 0.01)"],
+  "success_rate": {"backend": "100% (16/16 daily + 13/13 iter6 + iter7 passing when run serially)", "frontend": "100% functional; 1 design issue"},
+  "seed_data_creation": "Used manual_seed_daily.py to seed today and yesterday for user_test1. All TEST_daily hfx_trades/positions and daily_summaries were cleaned afterwards (verified 0 remaining).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run DB-seeding suites with `pytest -n 0`. Use `python tests/manual_seed_daily.py seed|clean` for daily UI testing. Day chip testIDs are daily-day-YYYY-MM-DD. LLM streaming starts within about 4s and finishes in under 30s.",
+  "rca_of_issue": "Root cause: app/daily.tsx was not registered in Stack.Protected, so expo-router treated it as an unguarded route. Fix verified: logged-out users go to /login, logged-in users start on markets-screen, and back works from every entry point."
+}

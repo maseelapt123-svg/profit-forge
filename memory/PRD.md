@@ -51,3 +51,5 @@ Follow-ups: "Faz trades automaticamente", "Está com resultados negativos", "Bai
 - AI Coach (Análise de Perdas): POST /api/ai/loss-review {scope hfx|bot} streams GPT-5.4 explanation of losses + exact corrections; last review saved (GET).
 - AI Filter on both bots (ai_filter flag): gpt-5.4-mini approves/rejects each entry (fails closed, 8s timeout on HFX, stale-candle recheck). Logged as kind "ai".
 - Backlog: real broker integration; AI filter approval-rate stat; split server.py.
+- Daily AI Summary (/daily): on-demand (Gerar) per UTC day, GET /api/ai/daily-stats?date, POST /api/ai/daily-summary (SSE), GET /api/ai/daily-summaries (history). Entry points: Home header icon, Ferramentas, both bot screens.
+- Bug fix: /daily was not registered in Stack.Protected → app landed on it when logged out/at start. Registered.

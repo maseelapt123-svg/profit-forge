@@ -8,6 +8,7 @@ import { PressableScale } from "@/src/components/ui";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 const TOOLS = [
+  { route: "/daily", icon: "newspaper", title: "Resumo Diário IA", desc: "Resultados do dia de cada robô e ajustes para amanhã" },
   { route: "/analysis", icon: "medkit", title: "Análise de Perdas", desc: "Explica porque perdeste e corrige o robô automaticamente" },
   { route: "/signals", icon: "flash", title: "Sinais", desc: "Consenso dos plugins com confirmação do timeframe superior" },
   { route: "/patterns", icon: "scan", title: "Scanner de Padrões", desc: "Engolfo, martelo, doji, pin bar e inside bar em todos os ativos" },
