@@ -1,0 +1,39 @@
+{
+  "summary": "Iteration 9 tested the 50-trade cap fix, days_covered, the per-kind c12/c20 optimizer lock, the generated SmartTradeAll.mq5 EA (preview, link, download, invalid token), the legacy SmartTrade12C.mq5, and the frontend flows Tools -> /ea-guide, bot MT card -> /ea-guide, simulate coverage note and results best/worst colours. Backend: 10/10 pytest tests pass. The simulation now uses every trade. BTC-USD 1h ema_cross gives 17, 87 and 196 trades for 30, 180 and 365 days, with different % results. 15m with days 365 gives days_covered=59, and avg_daily_pct matches the geometric mean over 59 days. c12 and c20 optimizations run at the same time; a second c12 request returns 429. All frontend flows work, with only minor cosmetic issues. No deprecated Expo packages were found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "ea_gen.build_configs", "issue": "c12/c20 pairs go into the EA even when c12_enabled or c20_enabled is false, if *_pairs exist. user_test1 has both disabled, yet the EA includes 12C and Sniper20 with EnableC12 and EnableC20 = true. The docstring says 'same job list the app's bot runs', but the app bot would not trade these. This may be intended ('todas as estratégias'). If so, the guide should say it."},
+      {"endpoint": "SmartTradeAll.mq5.tpl MagicOf(i)=MagicBase+i", "issue": "The magic number depends on the config index. After re-optimizing and re-downloading, the order of setups can change, so open positions get managed with another setup's partial-TP/R:R. A hash of symbol|tf|kind would be more stable."},
+      {"endpoint": "db.ea_links", "issue": "Expired tokens are never deleted (no TTL index). Cosmetic."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "ea-guide", "issues": ["The Sniper 20 setup row truncates at 390px ('BTCUSD · Sniper20 4...') because setupMeta takes the space. Allow 2 lines or move the meta to a second line."]},
+      {"screen": "bot MetaTrader card", "issues": ["The mt-download-ea label still wraps to 2 lines ('Robô MT5 com todas as estratégias (.mq5 → .ex5)'). Shorten it, e.g. 'Robô MT5 (.mq5 → .ex5)'."]},
+      {"screen": "results", "issues": ["The 'Dias vermelhos' mini label is still truncated to 'Dias verm...' at 390px."]},
+      {"screen": "tools", "issues": ["Clicking tool-ea-guide with Playwright when the card sat at the bottom edge of the viewport (y=811, h=87) did not navigate. Clicking by text works. Most likely a test artefact, not an app bug."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iter9_sim_alltrades_ea_all.py", "/app/test_reports/pytest/iter9.xml"],
+  "action_items": [
+    "Decide whether disabled c12/c20 kinds should be excluded from the EA. If they stay in, explain on the ea-guide that they are included even when disabled in the app.",
+    "Make the EA magic number stable per setup (hash of symbol/tf/kind) instead of the array index.",
+    "Minor UI: shorten the mt-download-ea label, fix the truncated ea-guide setup rows and the 'Dias vermelhos' label."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 2383 lines. Split it into routers (simulate, optimizers, ea, live).",
+    "/api/ea/all/{token} works without the auth header by design (token from POST /ea/all/link, 15 min expiry). Tokens can be reused within the 15 minutes. Acceptable."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter9_sim_alltrades_ea_all.py"],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "100% of requested flows work (4 minor cosmetic issues)"},
+  "seed_data_creation": "None. The c12/c20 optimizers overwrote the user_test1 c12_pairs/c20_pairs, which were restored through PUT /api/bot by the module fixture. Verified afterwards: setups=[BTC-USD 5m killzone], c12_pairs=[BTC-USD 1d 1.5 9], c20_pairs=[BTC-USD 4h 5 18], enabled=false, live_mode=paper. A Mongo backup is in /tmp/bot_backup.json. The MetaTrader chip on /bot was only toggled locally and not saved.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: `EXPO_PUBLIC_BACKEND_URL=https://profit-forge-42.preview.emergentagent.com pytest tests/test_iter9_sim_alltrades_ea_all.py -n 0 -v -s` (about 20s because data is cached). The mt-download-ea button only shows when bot-exec-mode-metatrader is selected. The simulate screen has the AI filter on by default.",
+  "rca_of_issue": "The 50-trade cap is fixed: run_backtest/simulate take all_trades=True from _simulate_job (strategies.py:753)."
+}

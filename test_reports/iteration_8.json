@@ -1,0 +1,45 @@
+{
+  "summary": "Backend: wrote tests/test_iter8_sim_live_c20.py. It passes 20/20 when run serially and covers EA download, /simulate (30/180/365 days, capital $10 and $10k, ai:false), validation, optimize-negatives + apply, c12/c20 per-pair optimizers + persistence, daily-results for all 4 scopes + invalid scope, PUT /bot limits (30 ok, 31 -> 422, live_mode enum), live/MT 'not configured' states, and a confirm20 backtest with rr 10 + partial 50. CRITICAL LOGIC BUG: the simulation counts at most 50 trades per strategy, because run_backtest returns only trades[-50:]. As a result, 180-day and 365-day runs give identical results (100 trades for 2 items), and a single 15m item returns exactly 50 trades for both 90 and 365 days. avg_daily_pct is also divided by the requested calendar days rather than the days the data covers. UI smoke: everything passes. The Simular tab loads, capital can go down to $10, the run shows sim-results with 'Média diária'. /results loads with 4 scope chips and 4 day chips, and switching scopes changes the totals. On /bot, the bot-exec-mode chips work; MetaTrader shows bot-mt with mt-download-ea and the 'Falta o token MetaApi' message, and Binance shows the 'Ainda sem chaves' message. Minor UI issues: on /results the 'Pior dia' value is always red and the stat labels are truncated.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/simulate (and optimize-negatives decisions that rely on sim rows)", "issue": "strategies.run_backtest returns only 'trades': trades[-50:][::-1] (strategies.py:752). _simulate_job (server.py:1189-1195) filters res['trades'] by date, so each strategy is capped at its latest 50 trades. Long periods (90/180/365 days) are silently truncated: 180 and 365 days give identical pnl -670.35 / 100 trades / 55 trading days, and single item BTC 15m donchian gives 50 trades / 19 days for both 90 and 365 days. pnl, pct, max_dd and avg_daily are wrong for any strategy with more than 50 trades in the period.", "priority": "CRITICAL"}
+    ],
+    "minor": [
+      {"endpoint": "POST /api/simulate", "issue": "avg_daily_pct is computed with geo over body.days (server.py:1154-1155) even when the data covers fewer days (15m is about 60 days, 5m less), which understates the daily average. Use the actual covered span (min(days, data span)) and return it so the UI can say 'dados de X a Y'."},
+      {"endpoint": "POST /api/bot/c20-optimize", "issue": "The c12 and c20 jobs share one lock (server.py:1355), so a running c12 job blocks c20 with the message 'Já tens uma otimização Sniper 20 em curso' even when the kind is c12."},
+      {"endpoint": "PUT /api/bot", "issue": "c20_pairs/c12_pairs default to [] in BotIn and are $set on every save. A client that omits them, or saves stale state while an optimizer is pushing pairs, wipes or reverts the optimizer results. Consider excluding unset fields (model_dump(exclude_unset=True)) for the pairs."},
+      {"endpoint": "general", "issue": "Flaky: in 2 runs, GET /api/bot timed out (>30s and >60s) through the public URL, while curl a minute later took 0.15s. A later 25-request probe was stable. This may be an event-loop stall from a background job. Monitor it."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "results.tsx Mini 'Pior dia'", "issue": "Color is hard-coded to colors.error (results.tsx:87), so a positive worst day (+$14,00) shows in red. Color by sign. Check 'Melhor dia' too.", "testID": "results-screen", "priority": "low"},
+      {"component": "simulate.tsx 'Retirar negativos (N)'", "issue": "N counts negative c12/c20 rows as well, but removeNeg only removes setups, so the label overstates what gets removed. Also, if sel becomes empty after removal, rerun stays true and auto-starts a sim on the next selection change.", "testID": "sim-remove-negatives", "priority": "low"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "results", "issues": ["The 4 mini stat cards truncate their labels at 375px ('Dias verd...', 'Dias ver...'). Use 2x2 or shorter labels."]},
+      {"screen": "bot MetaTrader card", "issues": ["The mt-download-ea button label wraps to 2 lines. Also, the EA is .mq5 only while MT4 is offered in mt-platform, so MT4 users cannot use it; mention this."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iter8_sim_live_c20.py", "/app/test_reports/pytest/iter8.xml"],
+  "action_items": [
+    "CRITICAL: make the simulation use all trades. For example, add a param to run_backtest (return_all_trades=True) or return an 'all_trades' list used only by _simulate_job, keeping the 50-trade list for the /backtest UI.",
+    "Compute avg_daily_pct over the actual covered days (from the first available bar within the period) and expose the 'from' date in the sim job result.",
+    "results.tsx:87 'Pior dia' (and 'Melhor dia'): color by sign. Fix the truncated stat labels.",
+    "Separate the c12/c20 optimizer lock per kind, or fix the 429 message.",
+    "Protect c12_pairs/c20_pairs from being overwritten by PUT /bot when they are omitted or stale."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 2343 lines. Split simulate/optimizer/live routes into modules.",
+    "/api/ea/SmartTrade12C.mq5 is unauthenticated (fine for a public EA, but intentional?)."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter8_sim_live_c20.py"],
+  "success_rate": {"backend": "100% of tests pass (20/20); 1 critical logic bug found by data inspection", "frontend": "100% of smoke flows pass; 2 minor UI bugs"},
+  "seed_data_creation": "None. The bot config of user_test1 was backed up and restored after the tests (live_mode paper, enabled false, original setups/c12_pairs/c20_pairs).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run with -n 0: `EXPO_PUBLIC_BACKEND_URL=... pytest tests/test_iter8_sim_live_c20.py -n 0 -v -s` (about 2 minutes). The module fixture restores the bot config via PUT. The frontend env key is EXPO_PUBLIC_BACKEND_URL. After the 50-trade fix, verify that a 365-day simulation gives more trades than a 180-day one. Bot symbols for user_test1 = ['BTC-USD'], so the optimizers are fast (about 20s each).",
+  "rca_of_issue": "Reproduce: POST /api/simulate items=[{kind:'setup',symbol:'BTC-USD',tf:'15m',strategy:'donchian'}] with days 90 and days 365 -> both give trades=50 and pct=-17.11. Root cause: run_backtest truncates its trades list to 50 for UI display, and _simulate_job reuses that list as the full trade set."
+}

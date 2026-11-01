@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import uuid
+from datetime import datetime, timezone
 
 from emergentintegrations.llm.chat import LlmChat, StreamDone, TextDelta, UserMessage
 
@@ -40,6 +41,12 @@ async def ai_filter(context: str, timeout: float = 15) -> dict:
     except Exception as e:  # external boundary
         logger.warning("ai filter failed: %s", e)
         return {"approve": False, "confidence": 0, "reason": "IA indisponível — entrada cancelada por segurança"}
+
+
+async def record_rejection(db, uid: str, scope: str, symbol: str, side: str, v: dict) -> None:
+    await db.ai_decisions.insert_one({"user_id": uid, "scope": scope, "symbol": symbol, "side": side,
+                                      "confidence": v["confidence"], "reason": v["reason"],
+                                      "created_at": datetime.now(timezone.utc).isoformat()})
 
 
 REVIEW_SYSTEM = (

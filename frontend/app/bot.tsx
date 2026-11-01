@@ -7,13 +7,24 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api, money } from "@/src/api";
 import { STRATS } from "@/src/strategies";
+import { C20Optimize } from "@/src/components/c20-optimize";
 import { ConfluencePanel } from "@/src/components/confluence-panel";
+import { Confirm12Panel } from "@/src/components/confirm12-panel";
+import { LiveAccount } from "@/src/components/live-account";
+import { MtAccount } from "@/src/components/mt-account";
+import { OptimizeAll } from "@/src/components/optimize-all";
 import { useToast } from "@/src/components/toast";
 import { Button, Center, ChipRow, haptic } from "@/src/components/ui";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type Setup = { symbol: string; tf: string; strategy: string; sl_atr: number; rr: number; trend_filter: boolean; mtf: boolean };
-type Bot = { setups?: Setup[]; mtf: boolean; ai_filter: boolean; conf_votes: number; conf_score: number; trend_filter: boolean; enabled: boolean; symbols: string[]; tf: string; strategy: string; risk_pct: number; sl_atr: number; rr: number; max_positions: number; last_run?: string };
+type Bot = { setups?: Setup[]; mtf: boolean; ai_filter: boolean; conf_votes: number; conf_score: number;
+  c12_enabled: boolean; c12_min: number; c12_max_positions: number; c12_tf: string;
+  c20_enabled: boolean; c20_min: number; c20_max_positions: number; c20_tf: string; c20_rr: number; c20_ptp_r: number;
+  c20_pairs?: { symbol: string; tf: string; rr: number; min: number; enabled: boolean; test: number | null }[];
+  c12_pairs?: { symbol: string; tf: string; rr: number; min: number; enabled: boolean; test: number | null }[];
+  ptp_enabled: boolean; ptp_pct: number; ptp_r: number; live_mode: "paper" | "binance" | "metatrader"; live_max_usd: number;
+  mt_max_lots: number; mt_suffix: string; trend_filter: boolean; enabled: boolean; symbols: string[]; tf: string; strategy: string; risk_pct: number; sl_atr: number; rr: number; max_positions: number; last_run?: string };
 type Resp = {
   bot: Bot; logs: { log_id: string; kind: string; msg: string; created_at: string }[];
   stats: { trades: number; pnl: number; wins: number; open: number }; assets: { symbol: string; display: string; category: string }[];
@@ -21,6 +32,8 @@ type Resp = {
 
 const TFS = [
   { value: "1m", label: "1m" },
+  { value: "2m", label: "2m" },
+  { value: "3m", label: "3m" },
   { value: "5m", label: "5m" },
   { value: "15m", label: "15m" },
   { value: "1h", label: "1H" },
@@ -132,6 +145,12 @@ export default function BotScreen() {
               <Stat label="Resultado" value={money(st.pnl)} color={st.pnl >= 0 ? colors.success : colors.error} />
             </View>
           )}
+          <OptimizeAll
+            onDone={async () => {
+              const fresh = await qc.fetchQuery({ queryKey: ["bot"], queryFn: () => api<Resp>("/bot") });
+              setCfg(fresh.bot);
+            }}
+          />
 
           <Text style={styles.section}>Estratégia</Text>
           <ChipRow options={STRATS} value={cfg.strategy} onChange={(v) => upd({ strategy: v })} testID="bot-strategy" />
@@ -145,6 +164,122 @@ export default function BotScreen() {
                 <Step label="Pontuação mín." value={cfg.conf_score} step={5} min={40} max={90} onChange={(v) => upd({ conf_score: v })} testID="bot-conf-score" suffix="%" />
               </View>
               {cfg.symbols[0] && <ConfluencePanel symbol={cfg.symbols[0]} tf={cfg.tf} votes={cfg.conf_votes} score={cfg.conf_score} />}
+            </View>
+          )}
+          <View style={styles.c12Card} testID="bot-c12">
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.c12Title}>12 Confirmações · entradas extra</Text>
+                <Text style={styles.note}>Corre à parte da estratégia principal, com limite de posições próprio. Só entra quando o mínimo de confirmações concorda.</Text>
+              </View>
+              <Switch
+                testID="bot-c12-switch"
+                value={cfg.c12_enabled}
+                onValueChange={(v) => upd({ c12_enabled: v })}
+                trackColor={{ true: colors.success, false: colors.surfaceTertiary }}
+                thumbColor={colors.onBrandPrimary}
+              />
+            </View>
+          </View>
+          {cfg.c12_enabled && (
+            <>
+              <Text style={[styles.note, { paddingHorizontal: 16, marginBottom: 4 }]}>Timeframe das entradas 12C (recomendado 1H ou superior)</Text>
+              <ChipRow options={TFS.filter((t) => !["1m", "2m", "3m"].includes(t.value))} value={cfg.c12_tf} onChange={(v) => upd({ c12_tf: v })} testID="bot-c12-tf" />
+              <View style={styles.steps}>
+                <Step label="Mín. confirmações" value={cfg.c12_min} step={1} min={6} max={12} onChange={(v) => upd({ c12_min: v })} testID="bot-c12-min" suffix="/12" />
+                <Step label="Máx. posições 12C" value={cfg.c12_max_positions} step={1} min={1} max={30} onChange={(v) => upd({ c12_max_positions: v })} testID="bot-c12-max" />
+              </View>
+              {cfg.symbols[0] && <Confirm12Panel symbol={cfg.symbols[0]} tf={cfg.c12_tf} min={cfg.c12_min} />}
+              <C20Optimize
+                kind="c12"
+                pairs={cfg.c12_pairs ?? []}
+                onDone={async () => {
+                  const fresh = await qc.fetchQuery({ queryKey: ["bot"], queryFn: () => api<Resp>("/bot") });
+                  setCfg((c) => (c ? { ...c, c12_pairs: fresh.bot.c12_pairs } : fresh.bot));
+                }}
+              />
+            </>
+          )}
+          <View style={styles.c12Card} testID="bot-c20">
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.c12Title}>Sniper 20 · confluência de 20 ferramentas</Text>
+                <Text style={styles.note}>Estratégia independente: só entra com muitas das 20 ferramentas alinhadas e procura alvos grandes (R:R 1:5 ou 1:10). Acerta menos vezes, mas cada ganho vale 5–10x o risco.</Text>
+              </View>
+              <Switch
+                testID="bot-c20-switch"
+                value={cfg.c20_enabled}
+                onValueChange={(v) => upd({ c20_enabled: v })}
+                trackColor={{ true: colors.success, false: colors.surfaceTertiary }}
+                thumbColor={colors.onBrandPrimary}
+              />
+            </View>
+          </View>
+          {cfg.c20_enabled && (
+            <>
+              <Text style={[styles.note, { paddingHorizontal: 16, marginBottom: 4 }]}>Risco:Retorno</Text>
+              <ChipRow options={[{ value: "5", label: "1:5" }, { value: "10", label: "1:10" }]} value={String(cfg.c20_rr)} onChange={(v) => upd({ c20_rr: Number(v) })} testID="bot-c20-rr" />
+              <Text style={[styles.note, { paddingHorizontal: 16, marginBottom: 4 }]}>Timeframe Sniper 20</Text>
+              <ChipRow options={TFS.filter((t) => !["1m", "2m", "3m"].includes(t.value))} value={cfg.c20_tf} onChange={(v) => upd({ c20_tf: v })} testID="bot-c20-tf" />
+              <View style={styles.steps}>
+                <Step label="Mín. ferramentas" value={cfg.c20_min} step={1} min={10} max={20} onChange={(v) => upd({ c20_min: v })} testID="bot-c20-min" suffix="/20" />
+                <Step label="Máx. posições" value={cfg.c20_max_positions} step={1} min={1} max={30} onChange={(v) => upd({ c20_max_positions: v })} testID="bot-c20-max" />
+              </View>
+              {cfg.symbols[0] && <Confirm12Panel symbol={cfg.symbols[0]} tf={cfg.c20_tf} min={cfg.c20_min} set="c20" />}
+              <C20Optimize
+                pairs={cfg.c20_pairs ?? []}
+                onDone={async () => {
+                  const fresh = await qc.fetchQuery({ queryKey: ["bot"], queryFn: () => api<Resp>("/bot") });
+                  setCfg((c) => (c ? { ...c, c20_pairs: fresh.bot.c20_pairs } : fresh.bot));
+                }}
+              />
+            </>
+          )}
+          <Text style={[styles.note, { paddingHorizontal: 16, marginTop: 8, marginBottom: 4 }]}>Onde o robô executa as ordens</Text>
+          <ChipRow
+            options={[{ value: "paper", label: "Simulada" }, { value: "metatrader", label: "MetaTrader" }, { value: "binance", label: "Binance" }]}
+            value={cfg.live_mode ?? "paper"}
+            onChange={(v) => upd({ live_mode: v as Bot["live_mode"] })}
+            testID="bot-exec-mode"
+          />
+          {cfg.live_mode === "metatrader" && (
+            <MtAccount
+              maxLots={cfg.mt_max_lots ?? 0.1}
+              suffix={cfg.mt_suffix ?? ""}
+              onMaxLots={(v) => upd({ mt_max_lots: v })}
+              onSuffix={(v) => upd({ mt_suffix: v })}
+            />
+          )}
+          {cfg.live_mode === "binance" && (
+            <LiveAccount
+              mode={cfg.live_mode ?? "paper"}
+              maxUsd={cfg.live_max_usd ?? 50}
+              onMode={(m) => upd({ live_mode: m })}
+              onMax={(v) => upd({ live_max_usd: v })}
+            />
+          )}
+          <View style={styles.c12Card} testID="bot-ptp">
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.c12Title}>Take profit parcial</Text>
+                <Text style={styles.note}>Fecha parte da posição no primeiro alvo, mete o stop em break-even e deixa o resto correr até ao alvo final.</Text>
+              </View>
+              <Switch
+                testID="bot-ptp-switch"
+                value={cfg.ptp_enabled}
+                onValueChange={(v) => upd({ ptp_enabled: v })}
+                trackColor={{ true: colors.success, false: colors.surfaceTertiary }}
+                thumbColor={colors.onBrandPrimary}
+              />
+            </View>
+          </View>
+          {cfg.ptp_enabled && (
+            <View style={styles.steps}>
+              <Step label="% a fechar" value={cfg.ptp_pct} step={10} min={10} max={90} onChange={(v) => upd({ ptp_pct: v })} testID="bot-ptp-pct" suffix="%" />
+              <Step label="Alvo parcial" value={cfg.ptp_r} step={0.5} min={0.5} max={5} onChange={(v) => upd({ ptp_r: v })} testID="bot-ptp-r" suffix="R" />
+              {cfg.c20_enabled && (
+                <Step label="Parcial Sniper" value={cfg.c20_ptp_r} step={0.5} min={0.5} max={5} onChange={(v) => upd({ c20_ptp_r: v })} testID="bot-c20-ptp-r" suffix="R" />
+              )}
             </View>
           )}
           <Text style={styles.section}>Timeframe</Text>
@@ -193,7 +328,7 @@ export default function BotScreen() {
           </View>
           <View style={styles.steps}>
             <Step label="Risco:Retorno" value={cfg.rr} step={0.5} min={0.5} max={6} onChange={(v) => upd({ rr: v })} testID="bot-rr" />
-            <Step label="Máx. posições" value={cfg.max_positions} step={1} min={1} max={10} onChange={(v) => upd({ max_positions: v })} testID="bot-max" />
+            <Step label="Máx. posições" value={cfg.max_positions} step={1} min={1} max={30} onChange={(v) => upd({ max_positions: v })} testID="bot-max" />
           </View>
           <View style={{ paddingHorizontal: 16, gap: 8 }}>
             <Button label="Guardar Configuração" onPress={() => save.mutate(cfg)} loading={save.isPending} testID="bot-save-button" />
@@ -205,7 +340,9 @@ export default function BotScreen() {
 
           <View style={{ paddingHorizontal: 16, marginTop: 8 }}>
             <Button label="Ver Análise de Perdas" variant="ghost" onPress={() => router.push({ pathname: "/analysis", params: { scope: "bot" } })} testID="bot-open-analysis" />
+            <Button label="Resultados por dia" variant="ghost" onPress={() => router.push({ pathname: "/results", params: { scope: "bot" } })} testID="bot-open-results" />
             <Button label="Resumo Diário IA" variant="ghost" onPress={() => router.push("/daily")} testID="bot-open-daily" />
+            <Button label="Desempenho do Filtro IA" variant="ghost" onPress={() => router.push({ pathname: "/ai-stats", params: { scope: "bot" } })} testID="bot-open-ai-stats" />
           </View>
           <Text style={styles.section}>Atividade</Text>
           <View style={{ paddingHorizontal: 16 }} testID="bot-logs">
@@ -259,6 +396,8 @@ const useStyles = makeStyles((c) => ({
   stepBtnText: { color: c.onSurface, fontFamily: fonts.display, fontSize: 18 },
   stepValue: { color: c.onSurface, fontFamily: fonts.display, fontSize: 17 },
   note: { color: c.muted, fontFamily: fonts.text, fontSize: 12, lineHeight: 18 },
+  c12Card: { marginHorizontal: 16, marginVertical: 8, backgroundColor: c.surfaceSecondary, borderRadius: 12, borderWidth: 1, borderColor: c.brandTertiary, padding: 12 },
+  c12Title: { color: c.onSurface, fontFamily: fonts.display, fontSize: 16, marginBottom: 2 },
   muted: { color: c.muted, fontFamily: fonts.text, fontSize: 12 },
   override: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: c.surfaceSecondary, borderRadius: 8, borderWidth: 1, borderColor: c.brandTertiary, paddingLeft: 12 },
   overrideX: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },

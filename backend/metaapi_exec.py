@@ -1,0 +1,77 @@
+"""MetaApi cloud bridge: the bot's trades go to an MT4/MT5 (demo) account, visible in the MetaTrader app.
+Token stays server-side; broker passwords are sent once to MetaApi and never stored."""
+import os
+import uuid
+from typing import Optional
+
+import httpx
+
+PROV = "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai"
+HOSTS = {"new-york": "https://mt-client-api-v1.new-york.agiliumtrade.ai",
+         "london": "https://mt-client-api-v1.london.agiliumtrade.ai"}
+
+
+class MetaApiError(Exception):
+    pass
+
+
+def configured() -> bool:
+    return bool(os.environ.get("METAAPI_TOKEN"))
+
+
+async def _call(method: str, url: str, json: Optional[dict] = None, headers: Optional[dict] = None):
+    h = {"Accept": "application/json", "auth-token": os.environ["METAAPI_TOKEN"], **(headers or {})}
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.request(method, url, json=json, headers=h)
+    if r.status_code >= 400:
+        try:
+            msg = r.json().get("message", r.text)
+        except ValueError:
+            msg = r.text
+        raise MetaApiError(str(msg)[:200])
+    return None if r.status_code == 204 or not r.content else r.json()
+
+
+async def provision(login: str, password: str, server: str, platform: str, region: str = "new-york") -> str:
+    res = await _call("POST", f"{PROV}/users/current/accounts", headers={"transaction-id": uuid.uuid4().hex}, json={
+        "login": login, "password": password, "name": f"SmartTrade {login}", "server": server, "platform": platform,
+        "region": region, "magic": 10001, "type": "cloud-g2"})
+    return res["id"]
+
+
+async def account_state(acc_id: str) -> dict:
+    a = await _call("GET", f"{PROV}/users/current/accounts/{acc_id}")
+    return {"state": a.get("state"), "connection": a.get("connectionStatus"), "region": a.get("region", "new-york")}
+
+
+def _host(region: str) -> str:
+    return HOSTS.get(region, HOSTS["new-york"])
+
+
+async def info(acc_id: str, region: str) -> dict:
+    return await _call("GET", f"{_host(region)}/users/current/accounts/{acc_id}/account-information")
+
+
+async def positions(acc_id: str, region: str) -> list:
+    return await _call("GET", f"{_host(region)}/users/current/accounts/{acc_id}/positions") or []
+
+
+async def trade(acc_id: str, region: str, body: dict) -> dict:
+    r = await _call("POST", f"{_host(region)}/users/current/accounts/{acc_id}/trade", json=body)
+    if r and r.get("stringCode") not in (None, "TRADE_RETCODE_DONE", "TRADE_RETCODE_PLACED", "ERR_NO_ERROR"):
+        raise MetaApiError(f"{r.get('stringCode')}: {r.get('message', '')}")
+    return r or {}
+
+
+def to_mt_symbol(symbol: str, suffix: str = "") -> Optional[str]:
+    """yfinance symbol → typical MetaTrader symbol (brokers may add a suffix like '.m')."""
+    if symbol.endswith("=X"):
+        return symbol[:-2] + suffix
+    special = {"GC=F": "XAUUSD", "SI=F": "XAGUSD", "BTC-USD": "BTCUSD", "ETH-USD": "ETHUSD"}
+    return special[symbol] + suffix if symbol in special else None
+
+
+def lots(symbol: str, qty: float, max_lots: float) -> float:
+    """Units → lots (forex 100k, gold 100 oz, silver 5000 oz, crypto 1 coin), min 0.01, capped."""
+    size = 100000 if symbol.endswith("=X") else 100 if symbol == "GC=F" else 5000 if symbol == "SI=F" else 1
+    return max(0.01, min(max_lots, round(qty / size, 2)))

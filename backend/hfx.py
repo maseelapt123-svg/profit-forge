@@ -492,7 +492,8 @@ def build_router(db, get_user: Callable, get_account: Callable) -> APIRouter:
 
     async def settle_due():
         now = time.time()
-        due = await db.hfx_trades.find({"status": "open", "expires_ts": {"$lte": now}}, {"_id": 0}).to_list(500)
+        due = await db.hfx_trades.find({"status": "open", "expires_ts": {"$lte": now}, "trade_id": {"$exists": True},
+                                        "entry_price": {"$exists": True}}, {"_id": 0}).to_list(500)
         for t in due:
             try:
                 if t["source"] == "otc":
@@ -601,7 +602,7 @@ def build_router(db, get_user: Callable, get_account: Callable) -> APIRouter:
             if reason:
                 await log(uid, "skip", f"HFX {pair_display(pair, bot['source'])} {a['signal']} ignorado pela correção automática: {reason}")
                 continue
-            ai_note = ""
+            ai_note, ai_ok = "", None
             if bot.get("ai_filter"):
                 closes = ", ".join(f"{x:.{decimals(x)}f}" for x in df["close"].iloc[-15:])
                 v = await ai.ai_filter(
@@ -616,14 +617,18 @@ def build_router(db, get_user: Callable, get_account: Callable) -> APIRouter:
                     await log(uid, "skip", f"HFX {pair_display(pair, bot['source'])}: resposta da IA demasiado tarde, entrada cancelada")
                     continue
                 if not v["approve"]:
+                    await ai.record_rejection(db, uid, "hfx", pair, a["signal"], v)
                     await log(uid, "ai", f"IA rejeitou HFX {a['signal']} {pair_display(pair, bot['source'])}: {v['reason']} ({v['confidence']}%)")
                     continue
                 ai_note = f" · IA ✓ {v['confidence']}%: {v['reason']}"
+                ai_ok = {"confidence": v["confidence"], "reason": v["reason"]}
             try:
                 t = await open_trade(uid, pair, bot["source"], a["signal"], bot["amount"], expiry, "bot", a["best"]["rule"], a["best"]["label"])
             except HTTPException as e:
                 await log(uid, "skip", f"HFX {pair_display(pair, bot['source'])}: {e.detail}")
                 continue
+            if ai_ok:
+                await db.hfx_trades.update_one({"trade_id": t["trade_id"]}, {"$set": {"ai": ai_ok}})
             n_hour += 1
             await log(uid, "open", f"HFX {t['direction']} {pair_display(pair, bot['source'])} {expiry}m · "
                                    f"{a['best']['label']} ({a['best']['winrate']:.0f}% em {a['best']['samples']}) · {bot['amount']:.2f} ${ai_note}")

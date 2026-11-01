@@ -113,6 +113,16 @@ export default function PortfolioScreen() {
                 <View style={[styles.dot, { backgroundColor: bot.data?.bot.enabled ? colors.success : colors.muted }]} />
                 <Ionicons name="chevron-forward" size={18} color={colors.muted} />
               </PressableScale>
+              <PressableScale testID="open-portfolio-daily" style={styles.botCard} onPress={() => router.push({ pathname: "/results", params: { scope: "portfolio" } })}>
+                <View style={styles.botIcon}>
+                  <Ionicons name="calendar" size={20} color={colors.brandPrimary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.botTitle}>Histórico por dia</Text>
+                  <Text style={styles.subtitle}>Lucro e % de cada dia, total e média diária</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+              </PressableScale>
               <Segmented
                 options={[
                   { value: "open", label: `Posições Abertas (${d.positions.length})` },

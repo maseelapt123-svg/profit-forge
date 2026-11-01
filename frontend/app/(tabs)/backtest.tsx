@@ -1,3 +1,4 @@
+import { Ionicons } from "@react-native-vector-icons/ionicons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
@@ -15,6 +16,8 @@ import { STRATS } from "@/src/strategies";
 
 const TFS = [
   { value: "1m", label: "1m" },
+  { value: "2m", label: "2m" },
+  { value: "3m", label: "3m" },
   { value: "5m", label: "5m" },
   { value: "15m", label: "15m" },
   { value: "1h", label: "1H" },
@@ -25,7 +28,7 @@ const TFS = [
 type OptCand = { strategy: string; trend_filter: boolean; mtf: boolean; sl_atr: number; rr: number; train: Result["metrics"]; test: Result["metrics"] };
 type OptRow = { tf: string; htf: string | null; best: OptCand | null; tested: number; error: string | null };
 type OptJob = { job_id: string; symbol: string; display: string; status: "running" | "done"; current: string | null; total: number; results: OptRow[] };
-const HTF: Record<string, string | null> = { "1m": "15m", "5m": "1h", "15m": "4h", "1h": "4h", "4h": "1d", "1d": null };
+const HTF: Record<string, string | null> = { "1m": "15m", "2m": "15m", "3m": "15m", "5m": "1h", "15m": "4h", "1h": "4h", "4h": "1d", "1d": null };
 type Result = {
   metrics: { skipped_cost?: number; net_profit: number; return_pct: number; win_rate: number; profit_factor: number; max_drawdown: number; total_trades: number; avg_r: number; buy_hold_pct: number; final_equity: number };
   equity: number[];
@@ -71,6 +74,7 @@ export default function Backtest() {
   const [risk, setRisk] = useState(1);
   const [trendFilter, setTrendFilter] = useState(true);
   const [breakeven, setBreakeven] = useState(true);
+  const [partial, setPartial] = useState(0);
   const [mtf, setMtf] = useState(true);
   const [jobId, setJobId] = useState<string | null>(null);
   const toast = useToast();
@@ -81,7 +85,7 @@ export default function Backtest() {
     mutationFn: (p?: Partial<Params>) =>
       api<Result>("/backtest", {
         method: "POST",
-        body: { symbol, tf, strategy, sl_atr: slAtr, rr, risk_pct: risk, trend_filter: trendFilter, breakeven, mtf, ...p },
+        body: { symbol, tf, strategy, sl_atr: slAtr, rr, risk_pct: risk, trend_filter: trendFilter, breakeven, mtf, partial_pct: partial, partial_r: 1, ...p },
       }),
   });
   const startOpt = useMutation({
@@ -103,9 +107,13 @@ export default function Backtest() {
   }, [job.error, toast]);
   const optData = jobId ? job.data : undefined;
   const optRunning = startOpt.isPending || (!!jobId && optData?.status !== "done");
-  const validRows = (optData?.results ?? []).filter((x) => x.best);
+  const validRows = (optData?.results ?? []).filter((x) => x.best && x.best.test.return_pct > 6);
+  const [picked, setPicked] = useState<string[]>([]);
+  const chosenRows = validRows.filter((x) => picked.includes(x.tf));
+  const togglePick = (tfv: string) => setPicked((p) => (p.includes(tfv) ? p.filter((x) => x !== tfv) : [...p, tfv]));
   useEffect(() => {
     setJobId(null);
+    setPicked([]);
   }, [symbol]);
 
   const applyRow = (row: OptRow) => {
@@ -125,8 +133,9 @@ export default function Backtest() {
       const cur = await api<{ bot: any }>("/bot");
       const sym = optData.symbol;
       const symbols = Array.from(new Set([...(cur.bot.symbols ?? []), sym]));
-      const others = (cur.bot.setups ?? []).filter((x: any) => x.symbol !== sym);
-      const mine = validRows.map((row) => ({
+      const chosen = new Set(chosenRows.map((x) => x.tf));
+      const others = (cur.bot.setups ?? []).filter((x: any) => x.symbol !== sym || !chosen.has(x.tf));
+      const mine = chosenRows.map((row) => ({
         symbol: sym, tf: row.tf, strategy: row.best!.strategy, sl_atr: row.best!.sl_atr, rr: row.best!.rr,
         trend_filter: row.best!.trend_filter, mtf: row.best!.mtf,
       }));
@@ -175,8 +184,9 @@ export default function Backtest() {
         />
         <View style={styles.steppers}>
           <Stepper label="Stop (ATR)" value={slAtr} step={0.5} min={0.5} max={5} onChange={setSlAtr} testID="bt-sl" suffix="x" />
-          <Stepper label="Risco:Retorno" value={rr} step={0.5} min={0.5} max={6} onChange={setRr} testID="bt-rr" />
+          <Stepper label="Risco:Retorno" value={rr} step={0.5} min={0.5} max={10} onChange={setRr} testID="bt-rr" />
           <Stepper label="Risco/trade" value={risk} step={0.5} min={0.5} max={5} onChange={setRisk} testID="bt-risk" suffix="%" />
+          <Stepper label="Parcial a 1R" value={partial} step={10} min={0} max={90} onChange={setPartial} testID="bt-partial" suffix="%" />
         </View>
 
         {(optRunning || optData) && (
@@ -184,11 +194,22 @@ export default function Backtest() {
             <Text style={styles.optTitle}>Otimizador multi-timeframe · {optData?.display ?? symbol}</Text>
             {optRunning && (
               <Text style={styles.cardLabel} testID="opt-progress">
-                A otimizar {optData?.current?.toUpperCase() ?? "…"} ({optData?.results.length ?? 0}/{optData?.total ?? 6}) · treino 70% / teste 30%
+                A otimizar {optData?.current?.toUpperCase() ?? "…"} ({optData?.results.length ?? 0}/{optData?.total ?? 8}) · treino 70% / teste 30%
               </Text>
             )}
             {(optData?.results ?? []).map((row) => (
               <View key={row.tf} style={styles.optLine} testID={`opt-row-${row.tf}`}>
+                {row.best && row.best.test.return_pct > 6 ? (
+                  <Pressable testID={`opt-pick-${row.tf}`} onPress={() => togglePick(row.tf)} style={styles.optPick} hitSlop={6}>
+                    <Ionicons
+                      name={picked.includes(row.tf) ? "checkbox" : "square-outline"}
+                      size={22}
+                      color={picked.includes(row.tf) ? colors.brandPrimary : colors.muted}
+                    />
+                  </Pressable>
+                ) : (
+                  <View style={styles.optPick} />
+                )}
                 <Text style={styles.optTf}>{row.tf.toUpperCase()}</Text>
                 <View style={{ flex: 1 }}>
                   {row.best ? (
@@ -215,7 +236,25 @@ export default function Backtest() {
             ))}
             {optData?.status === "done" &&
               (validRows.length ? (
-                <Button label={`Usar no Robô (${validRows.length} timeframes)`} style={{ height: 48 }} onPress={sendAllToBot} testID="opt-bot-button" />
+                <View style={{ gap: 8 }}>
+                  <Text style={styles.cardLabel}>Só setups com lucro acima de 6% no período de teste podem ir para o robô. Marca os que queres usar.</Text>
+                  <View style={{ flexDirection: "row", gap: 8 }}>
+                    <Button
+                      label={picked.length === validRows.length ? "Limpar" : "Marcar todos"}
+                      variant="ghost"
+                      style={{ height: 48, flex: 1 }}
+                      onPress={() => setPicked(picked.length === validRows.length ? [] : validRows.map((x) => x.tf))}
+                      testID="opt-pick-all"
+                    />
+                    <Button
+                      label={`Usar no Robô (${chosenRows.length})`}
+                      style={{ height: 48, flex: 1.4 }}
+                      disabled={!chosenRows.length}
+                      onPress={sendAllToBot}
+                      testID="opt-bot-button"
+                    />
+                  </View>
+                </View>
               ) : (
                 <Text style={styles.note} testID="opt-none">
                   Nenhum timeframe foi lucrativo em treino E teste para este ativo. Não operes este ativo com estas estratégias.
@@ -305,8 +344,8 @@ const useStyles = makeStyles((c) => ({
   subtitle: { color: c.muted, fontFamily: fonts.text, fontSize: 12 },
   section: { color: c.muted, fontFamily: fonts.displaySemi, fontSize: 13, letterSpacing: 1, textTransform: "uppercase", paddingHorizontal: 16, marginTop: 16 },
   section2: { color: c.muted, fontFamily: fonts.displaySemi, fontSize: 13, letterSpacing: 1, textTransform: "uppercase", marginTop: 8 },
-  steppers: { flexDirection: "row", gap: 8, paddingHorizontal: 16, marginTop: 8, marginBottom: 16 },
-  stepper: { flex: 1, backgroundColor: c.surfaceSecondary, borderRadius: 12, borderWidth: 1, borderColor: c.border, padding: 8, gap: 4 },
+  steppers: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16, marginTop: 8, marginBottom: 16 },
+  stepper: { flexGrow: 1, flexBasis: "46%", backgroundColor: c.surfaceSecondary, borderRadius: 12, borderWidth: 1, borderColor: c.border, padding: 8, gap: 4 },
   stepLabel: { color: c.muted, fontFamily: fonts.text, fontSize: 11, textAlign: "center" },
   stepRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   stepBtn: { width: 32, height: 32, borderRadius: 8, backgroundColor: c.surfaceTertiary, alignItems: "center", justifyContent: "center" },
@@ -328,6 +367,7 @@ const useStyles = makeStyles((c) => ({
   optCard: { marginHorizontal: 16, marginBottom: 12, borderColor: c.brandSecondary, gap: 8 },
   optTitle: { color: c.brandPrimary, fontFamily: fonts.displaySemi, fontSize: 13, letterSpacing: 1, textTransform: "uppercase" },
   optLine: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, borderTopWidth: 1, borderTopColor: c.divider },
+  optPick: { width: 28, height: 44, alignItems: "center", justifyContent: "center" },
   optTf: { width: 34, color: c.brandPrimary, fontFamily: fonts.display, fontSize: 15 },
   optBestSm: { color: c.onSurface, fontFamily: fonts.displaySemi, fontSize: 14 },
   optApply: { height: 44, paddingHorizontal: 12, borderRadius: 999, borderWidth: 1, borderColor: c.borderStrong, justifyContent: "center" },

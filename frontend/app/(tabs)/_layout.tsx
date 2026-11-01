@@ -23,6 +23,10 @@ export default function TabsLayout() {
           <NativeTabs.Trigger.Icon sf="clock.arrow.circlepath" />
           <NativeTabs.Trigger.Label>Backtest</NativeTabs.Trigger.Label>
         </NativeTabs.Trigger>
+        <NativeTabs.Trigger name="simulate">
+          <NativeTabs.Trigger.Icon sf="function" />
+          <NativeTabs.Trigger.Label>Simular</NativeTabs.Trigger.Label>
+        </NativeTabs.Trigger>
         <NativeTabs.Trigger name="portfolio">
           <NativeTabs.Trigger.Icon sf="briefcase.fill" />
           <NativeTabs.Trigger.Label>Portfólio</NativeTabs.Trigger.Label>
@@ -53,6 +57,7 @@ export default function TabsLayout() {
       <Tabs.Screen name="index" options={{ title: "Mercados", tabBarIcon: icon("stats-chart"), tabBarButtonTestID: "tab-markets" } as any} />
       <Tabs.Screen name="hfx" options={{ title: "HFX", tabBarIcon: icon("timer"), tabBarButtonTestID: "tab-hfx" } as any} />
       <Tabs.Screen name="backtest" options={{ title: "Backtest", tabBarIcon: icon("time"), tabBarButtonTestID: "tab-backtest" } as any} />
+      <Tabs.Screen name="simulate" options={{ title: "Simular", tabBarIcon: icon("calculator"), tabBarButtonTestID: "tab-simulate" } as any} />
       <Tabs.Screen name="portfolio" options={{ title: "Portfólio", tabBarIcon: icon("briefcase"), tabBarButtonTestID: "tab-portfolio" } as any} />
     </Tabs>
   );

@@ -8,12 +8,14 @@ import { PressableScale } from "@/src/components/ui";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 const TOOLS = [
+  { route: "/results", icon: "bar-chart", title: "Resultados dos robôs", desc: "Lucro por dia, total e média diária dos robôs" },
   { route: "/daily", icon: "newspaper", title: "Resumo Diário IA", desc: "Resultados do dia de cada robô e ajustes para amanhã" },
   { route: "/analysis", icon: "medkit", title: "Análise de Perdas", desc: "Explica porque perdeste e corrige o robô automaticamente" },
   { route: "/signals", icon: "flash", title: "Sinais", desc: "Consenso dos plugins com confirmação do timeframe superior" },
   { route: "/patterns", icon: "scan", title: "Scanner de Padrões", desc: "Engolfo, martelo, doji, pin bar e inside bar em todos os ativos" },
   { route: "/calculator", icon: "calculator", title: "Calculadora de Posição", desc: "Quanto comprar consoante o capital, risco e stop" },
   { route: "/plugins", icon: "extension-puzzle", title: "Plugins de Estratégia", desc: "Ativa e ajusta SMC, RSI, EMA, MACD e Bollinger" },
+  { route: "/ea-guide", icon: "logo-windows", title: "Robô para MetaTrader 5", desc: "Descarrega o EA e instala no MT5 em 4 passos (.mq5 → .ex5)" },
   { route: "/bot", icon: "hardware-chip", title: "Robô Automático", desc: "Opera sozinho em vários timeframes otimizados" },
   { route: "/hfx-optimizer", icon: "trophy", title: "Estratégia Vencedora HFX", desc: "Encontra e valida a melhor combinação de plugins por par" },
   { route: "/hfx-plugins", icon: "options", title: "Plugins HFX", desc: "7 plugins de 1–3 min: BB+RSI, RSI(2), Estocástico, Pin bar…" },

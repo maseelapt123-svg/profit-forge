@@ -54,7 +54,8 @@ def seed():
         hour = i % now_h
         ts = (base + timedelta(hours=hour, minutes=5 + i)).timestamp()
         won = i in (0, 3, 7)  # 30% winrate -> poor day, triggers adjustments
-        hf.append({"id": f"{TAG}_{uuid.uuid4().hex[:8]}", "tag": TAG, "user_id": UID, "origin": "bot",
+        tid = f"{TAG}_{uuid.uuid4().hex[:8]}"
+        hf.append({"id": tid, "trade_id": tid, "entry_price": 1.1, "exit_price": 1.1001, "tag": TAG, "user_id": UID, "origin": "bot",
                    "status": "won" if won else "lost", "opened_ts": ts, "expires_ts": ts + 60, "pair": "EURUSD=X",
                    "source": "otc", "direction": "call" if i % 2 else "put", "expiry": 1,
                    "rule_label": "RSI reversão" if i % 2 else "EMA cruzamento", "amount": 10,
@@ -62,7 +63,8 @@ def seed():
                    "ctx": {"hour": hour, "aligned": i % 3 == 0, "rsi": 30 + i * 4, "vol_pct": 0.02 + i * 0.01}})
     for i, pnl in enumerate([-40.0, -35.0, 12.0, -50.0]):
         hour = i % now_h
-        pos.append({"id": f"{TAG}_{uuid.uuid4().hex[:8]}", "tag": TAG, "user_id": UID, "source": "bot", "status": "closed",
+        pid = f"{TAG}_{uuid.uuid4().hex[:8]}"
+        pos.append({"id": pid, "position_id": pid, "tag": TAG, "user_id": UID, "source": "bot", "status": "closed",
                     "symbol": "BTC-USD", "tf": "1h", "side": "BUY", "qty": 0.01, "entry": 90000, "exit": 89900, "pnl": pnl,
                     "reason": "take_profit" if pnl > 0 else "stop_loss",
                     "opened_at": (base + timedelta(hours=hour)).isoformat(),

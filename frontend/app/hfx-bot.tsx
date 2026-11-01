@@ -213,7 +213,9 @@ export default function HfxBot() {
           </View>
           <View style={{ paddingHorizontal: 16, marginTop: 8 }}>
             <Button label="Ver Análise de Perdas" variant="ghost" onPress={() => router.push({ pathname: "/analysis", params: { scope: "hfx" } })} testID="hfx-bot-open-analysis" />
+            <Button label="Resultados por dia" variant="ghost" onPress={() => router.push({ pathname: "/results", params: { scope: "hfx" } })} testID="hfx-bot-open-results" />
             <Button label="Resumo Diário IA" variant="ghost" onPress={() => router.push("/daily")} testID="hfx-bot-open-daily" />
+            <Button label="Desempenho do Filtro IA" variant="ghost" onPress={() => router.push({ pathname: "/ai-stats", params: { scope: "hfx" } })} testID="hfx-bot-open-ai-stats" />
           </View>
           <Text style={styles.section}>Atividade</Text>
           <View style={{ paddingHorizontal: 16 }} testID="hfx-bot-logs">

@@ -39,6 +39,9 @@ function Gate() {
         <Stack.Screen name="hfx-optimizer" />
         <Stack.Screen name="analysis" />
         <Stack.Screen name="daily" />
+        <Stack.Screen name="ai-stats" />
+        <Stack.Screen name="results" />
+        <Stack.Screen name="ea-guide" />
       </Stack.Protected>
       <Stack.Protected guard={!user}>
         <Stack.Screen name="login" />
