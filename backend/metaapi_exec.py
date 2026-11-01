@@ -25,7 +25,8 @@ async def _call(method: str, url: str, json: Optional[dict] = None, headers: Opt
         r = await c.request(method, url, json=json, headers=h)
     if r.status_code >= 400:
         try:
-            msg = r.json().get("message", r.text)
+            j = r.json()
+            msg = j.get("message", r.text) + (f" {j['details']}" if j.get("details") else "")
         except ValueError:
             msg = r.text
         raise MetaApiError(str(msg)[:200])
@@ -42,6 +43,29 @@ async def provision(login: str, password: str, server: str, platform: str, regio
 async def account_state(acc_id: str) -> dict:
     a = await _call("GET", f"{PROV}/users/current/accounts/{acc_id}")
     return {"state": a.get("state"), "connection": a.get("connectionStatus"), "region": a.get("region", "new-york")}
+
+
+async def list_accounts() -> list:
+    r = await _call("GET", f"{PROV}/users/current/accounts") or []
+    return [{"id": a["_id"], "name": a.get("name"), "login": a.get("login"), "server": a.get("server"),
+             "platform": a.get("platform") or f"mt{a.get('version', 5)}", "region": a.get("region", "new-york"),
+             "state": a.get("state"), "connection": a.get("connectionStatus")} for a in r]
+
+
+async def deploy(acc_id: str) -> None:
+    await _call("POST", f"{PROV}/users/current/accounts/{acc_id}/deploy")
+
+
+async def symbols(acc_id: str, region: str) -> list:
+    return await _call("GET", f"{_host(region)}/users/current/accounts/{acc_id}/symbols") or []
+
+
+async def price(acc_id: str, region: str, symbol: str) -> dict:
+    return await _call("GET", f"{_host(region)}/users/current/accounts/{acc_id}/symbols/{symbol}/current-price")
+
+
+async def spec(acc_id: str, region: str, symbol: str) -> dict:
+    return await _call("GET", f"{_host(region)}/users/current/accounts/{acc_id}/symbols/{symbol}/specification")
 
 
 def _host(region: str) -> str:

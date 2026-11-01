@@ -655,8 +655,7 @@ async def _go_mt(uid: str, bot: dict, pos: dict) -> bool:
     vol = metaapi_exec.lots(pos["symbol"], pos["qty"], float(bot.get("mt_max_lots", 0.1)))
     dec = price_decimals(pos["entry"])
     body = {"actionType": "ORDER_TYPE_BUY" if pos["side"] == "BUY" else "ORDER_TYPE_SELL", "symbol": mt_sym, "volume": vol,
-            "stopLoss": round(pos["stop_loss"], dec), "takeProfit": round(pos["take_profit"], dec), "comment": "SmartTrade",
-            "clientId": f"ST_{pos['position_id']}"[:26]}
+            "stopLoss": round(pos["stop_loss"], dec), "takeProfit": round(pos["take_profit"], dec), "comment": "SmartTrade"}
     try:
         r = await metaapi_exec.trade(acc["account_id"], acc["region"], body)
     except (metaapi_exec.MetaApiError, httpx.HTTPError) as e:
@@ -2285,6 +2284,121 @@ async def mt_status(request: Request):
         except (metaapi_exec.MetaApiError, httpx.HTTPError) as e:
             out["error"] = str(e)
     return out
+
+
+@api.get("/live/mt/accounts")
+async def mt_accounts(request: Request):
+    """Accounts already created in the user's MetaApi dashboard (to link one instead of re-entering the password)."""
+    await get_user(request)
+    if not metaapi_exec.configured():
+        raise HTTPException(400, "Falta o token MetaApi")
+    try:
+        return await metaapi_exec.list_accounts()
+    except (metaapi_exec.MetaApiError, httpx.HTTPError) as e:
+        raise HTTPException(400, f"MetaApi: {e}")
+
+
+class MtLinkIn(BaseModel):
+    account_id: str = Field(min_length=8, max_length=64)
+
+
+async def _mt_deploy(acc_id: str) -> Optional[str]:
+    try:
+        await metaapi_exec.deploy(acc_id)
+        return None
+    except (metaapi_exec.MetaApiError, httpx.HTTPError) as e:
+        if "access" in str(e).lower():
+            return ("O token MetaApi não tem permissão para ligar a conta. Abre app.metaapi.cloud → Accounts e carrega em "
+                    "'Deploy' nesta conta (ou cria um token com acesso total).")
+        return f"MetaApi: {e}"
+
+
+@api.post("/live/mt/link")
+async def mt_link(body: MtLinkIn, request: Request):
+    u = await get_user(request)
+    if not metaapi_exec.configured():
+        raise HTTPException(400, "Falta o token MetaApi")
+    try:
+        acc = next((a for a in await metaapi_exec.list_accounts() if a["id"] == body.account_id), None)
+    except (metaapi_exec.MetaApiError, httpx.HTTPError) as e:
+        raise HTTPException(400, f"MetaApi: {e}")
+    if not acc:
+        raise HTTPException(404, "Conta não encontrada na MetaApi")
+    await db.live_accounts.update_one({"user_id": u["user_id"], "kind": "mt"}, {"$set": {
+        "account_id": acc["id"], "region": acc["region"], "login": acc["login"], "server": acc["server"], "platform": acc["platform"],
+        "created_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    err = await _mt_deploy(acc["id"]) if acc["state"] != "DEPLOYED" else None
+    return {"account_id": acc["id"], "deploy_error": err}
+
+
+@api.post("/live/mt/deploy")
+async def mt_deploy(request: Request):
+    u = await get_user(request)
+    acc = await _mt_acc(u["user_id"])
+    if not acc or not metaapi_exec.configured():
+        raise HTTPException(400, "Liga primeiro uma conta MetaTrader")
+    err = await _mt_deploy(acc["account_id"])
+    if err:
+        raise HTTPException(400, err)
+    return {"ok": True}
+
+
+class MtTestIn(BaseModel):
+    symbol: str = Field("EURUSD", pattern=r"^[A-Z0-9]{3,12}$")
+    side: str = Field("BUY", pattern="^(BUY|SELL)$")
+
+
+@api.post("/live/mt/test-order")
+async def mt_test_order(body: MtTestIn, request: Request):
+    """Minimum-size market order (with SL/TP) on the linked MetaTrader account — to check the whole chain works."""
+    u = await get_user(request)
+    acc = await _mt_acc(u["user_id"])
+    if not acc or not metaapi_exec.configured():
+        raise HTTPException(400, "Liga primeiro uma conta MetaTrader")
+    reg, aid = acc["region"], acc["account_id"]
+    try:
+        st = await metaapi_exec.account_state(aid)
+        if st["connection"] != "CONNECTED":
+            raise HTTPException(400, f"A conta ainda não está ligada à corretora ({st['state']} · {st['connection']})")
+        inf = await metaapi_exec.info(aid, reg)
+        names = await metaapi_exec.symbols(aid, reg)
+        bot = await get_bot(u["user_id"])
+        want = body.symbol + (bot.get("mt_suffix") or "")
+        sym = want if want in names else next((n for n in names if n.upper().startswith(body.symbol)), None)
+        if not sym:
+            raise HTTPException(400, f"{body.symbol} não existe nesta corretora")
+        px = await metaapi_exec.price(aid, reg, sym)
+        sp = await metaapi_exec.spec(aid, reg, sym)
+        entry = px["ask"] if body.side == "BUY" else px["bid"]
+        dist = entry * 0.003  # stop 0.3% · alvo 0.6% (1:2)
+        dg = int(sp.get("digits", 5))
+        sgn = 1 if body.side == "BUY" else -1
+        r = await metaapi_exec.trade(aid, reg, {
+            "actionType": f"ORDER_TYPE_{body.side}", "symbol": sym, "volume": float(sp.get("minVolume", 0.01)),
+            "stopLoss": round(entry - sgn * dist, dg), "takeProfit": round(entry + sgn * 2 * dist, dg),
+            "comment": "ST teste"})
+    except (metaapi_exec.MetaApiError, httpx.HTTPError) as e:
+        raise HTTPException(400, f"MetaTrader recusou: {e}")
+    await bot_log(u["user_id"], "open", f"MetaTrader (teste): {body.side} {sp.get('minVolume', 0.01)} lote {sym} @ {entry}", None)
+    return {"symbol": sym, "side": body.side, "volume": float(sp.get("minVolume", 0.01)), "price": entry,
+            "position_id": r.get("positionId") or r.get("orderId"), "code": r.get("stringCode"), "account_type": inf.get("type")}
+
+
+class MtCloseIn(BaseModel):
+    position_id: str = Field(min_length=1, max_length=40)
+
+
+@api.post("/live/mt/test-close")
+async def mt_test_close(body: MtCloseIn, request: Request):
+    u = await get_user(request)
+    acc = await _mt_acc(u["user_id"])
+    if not acc or not metaapi_exec.configured():
+        raise HTTPException(400, "Liga primeiro uma conta MetaTrader")
+    try:
+        await metaapi_exec.trade(acc["account_id"], acc["region"], {"actionType": "POSITION_CLOSE_ID", "positionId": body.position_id})
+    except (metaapi_exec.MetaApiError, httpx.HTTPError) as e:
+        raise HTTPException(400, f"MetaTrader: {e}")
+    return {"ok": True}
 
 
 @api.get("/ea/all")
