@@ -57,6 +57,9 @@ bool GlobalVariableCheck(std::string n); double GlobalVariableSet(std::string n,
 std::string IntegerToString(long v); std::string DoubleToString(double v, int d);
 template<class... A> void PrintFormat(const char* f, A... a); template<class... A> void Print(A... a);
 bool EventSetTimer(int s); void EventKillTimer();
+template<class... A> std::string StringFormat(const char* f, A... a); template<class... A> void Alert(A... a);
+int MessageBox(std::string t, std::string c, int f); long TerminalInfoInteger(int p); long MQLInfoInteger(int p); long AccountInfoInteger(int p);
+enum { MB_YESNO = 4, MB_ICONQUESTION = 32, IDYES = 6, TERMINAL_TRADE_ALLOWED, MQL_TRADE_ALLOWED, ACCOUNT_TRADE_MODE, ACCOUNT_TRADE_MODE_REAL };
 struct CTrade { void SetExpertMagicNumber(long m); bool Buy(double, std::string, double, double, double, std::string); bool Sell(double, std::string, double, double, double, std::string);
  bool PositionClose(ulong t); bool PositionClosePartial(ulong t, double v); bool PositionModify(ulong t, double sl, double tp); uint ResultRetcode(); std::string ResultRetcodeDescription(); };
 '''

@@ -2306,21 +2306,24 @@ async def ea_all_link(request: Request):
     await db.ea_links.delete_many({"expires": {"$lt": time.time()}})
     token = uuid.uuid4().hex
     await db.ea_links.insert_one({"token": token, "user_id": u["user_id"], "expires": time.time() + 900})
-    return {"path": f"/ea/all/{token}/SmartTradeAll.mq5"}
+    return {"path": f"/ea/all/{token}/{'SmartTradeNow' if request.query_params.get('script') else 'SmartTradeAll'}.mq5"}
 
 
-@api.get("/ea/all/{token}/SmartTradeAll.mq5")
-async def ea_all_download(token: str):
+@api.get("/ea/all/{token}/{name}.mq5")
+async def ea_all_download(token: str, name: str):
     from fastapi.responses import Response
+    if name not in ("SmartTradeAll", "SmartTradeNow"):
+        raise HTTPException(404, "Ficheiro desconhecido")
     link = await db.ea_links.find_one({"token": token}, {"_id": 0})
     if not link or link["expires"] < time.time():
         raise HTTPException(404, "Link expirado — gera um novo na app")
     bot = await get_bot(link["user_id"])
     user = await db.users.find_one({"user_id": link["user_id"]}, {"_id": 0, "email": 1}) or {}
     plugins = await user_plugins(link["user_id"])
-    src = ea_gen.render(bot, plugins, ea_gen.build_configs(bot, HTF_MAP, FEES, ASSET_INFO), user.get("email", link["user_id"]))
+    fn = ea_gen.render_script if name == "SmartTradeNow" else ea_gen.render
+    src = fn(bot, plugins, ea_gen.build_configs(bot, HTF_MAP, FEES, ASSET_INFO), user.get("email", link["user_id"]))
     return Response(src.encode("utf-8"), media_type="text/plain; charset=utf-8",
-                    headers={"Content-Disposition": 'attachment; filename="SmartTradeAll.mq5"'})
+                    headers={"Content-Disposition": f'attachment; filename="{name}.mq5"'})
 
 
 @api.get("/ea/SmartTrade12C.mq5")

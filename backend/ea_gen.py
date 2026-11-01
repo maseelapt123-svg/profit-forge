@@ -85,7 +85,7 @@ def _f(x: float) -> str:
     return repr(float(x))
 
 
-def render(bot: dict, plugins: dict, configs: list, user: str) -> str:
+def render(bot: dict, plugins: dict, configs: list, user: str, script: bool = False) -> str:
     cfg = [f"#define NCFG {len(configs)}",
            _arr("string", "CSym", [_s(c["mt_symbol"]) for c in configs]),
            _arr("string", "CLabel", [_s(c["label"]) for c in configs]),
@@ -128,8 +128,43 @@ def render(bot: dict, plugins: dict, configs: list, user: str) -> str:
         "__PTPON__": "true" if bot.get("ptp_enabled", True) else "false", "__PTPPCT__": _f(bot.get("ptp_pct", 50)),
         "__MAXLOTS__": _f(bot.get("mt_max_lots", 0.1)), "__SUFFIX__": (bot.get("mt_suffix") or "").replace('"', ""),
         "__CONFIG__": "// ---- setups otimizados na app:\n" + table + "\n" + "\n".join(cfg),
+        "//__RUNTIME__\n": "//__RUNTIME__\n" if script else "",
     }
     src = TPL.read_text(encoding="utf-8")
     for k, v in rep.items():
         src = src.replace(k, v)
+    return src
+
+
+SCRIPT_MAIN = r'''void OnStart() {
+   ArrayResize(LastBar, NCFG); for(int i = 0; i < NCFG; i++) LastBar[i] = 0;
+   SrvOffset = (long)(MathRound((double)(TimeTradeServer() - TimeGMT()) / 1800.0) * 1800);
+   SigBars = MathMax(1, SignalBars); StreamCap = MathMax(1, MaxNewPerKind);
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED)) { Alert("Ativa o botão 'Algo Trading' e 'Permitir Algo Trading' nas propriedades do script."); return; }
+   for(int i = 0; i < NCFG; i++) if(!SymbolSelect(Sym(i), true)) PrintFormat("Símbolo %s não existe nesta corretora — ajusta o sufixo (SymbolSuffix).", Sym(i));
+   string plan = ""; int o12 = 0, o20 = 0, n = 0;
+   for(int i = 0; i < NCFG; i++) if(SymbolInfoInteger(Sym(i), SYMBOL_SELECT) && Evaluate(i, o12, o20, true, plan)) n++;
+   if(n == 0) { Alert(StringFormat("SmartTrade: nenhum dos %d setups tem sinal válido nas últimas %d velas. Nada aberto.", NCFG, SigBars)); return; }
+   string acc = AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL ? "CONTA REAL" : "conta demo";
+   if(AskConfirmation && MessageBox(StringFormat("Abrir %d ordens na %s (risco %.2f%% cada)?\n\n%s", n, acc, RiskPercent, plan), "SmartTrade — abrir ordens com sinal", MB_YESNO | MB_ICONQUESTION) != IDYES) { Print("SmartTrade: cancelado."); return; }
+   for(int i = 0; i < NCFG; i++) LastBar[i] = 0;
+   o12 = 0; o20 = 0; int done = 0;
+   for(int i = 0; i < NCFG; i++) if(SymbolInfoInteger(Sym(i), SYMBOL_SELECT) && Evaluate(i, o12, o20, false, plan)) done++;
+   Alert(StringFormat("SmartTrade: %d de %d ordens abertas (detalhes no separador Experts). Para gerir stops/TP parcial deixa o SmartTradeAll ligado.", done, n));
+}
+'''
+
+
+def render_script(bot: dict, plugins: dict, configs: list, user: str) -> str:
+    """One-shot MT5 script: opens now every setup that has a valid signal (same rules/magic IDs as the EA)."""
+    src = render(bot, plugins, configs, user, script=True)
+    src = src.split("//__RUNTIME__")[0] + SCRIPT_MAIN
+    src = src.replace('#property version   "2.00"', '#property version   "2.00"\n#property script_show_inputs')
+    src = src.replace("//| SmartTradeAll.mq5 — Expert Advisor \"Todas as Estratégias\" (SmartTrade AI)",
+                      "//| SmartTradeNow.mq5 — SCRIPT \"Abrir ordens com sinal agora\" (SmartTrade AI)\n"
+                      "//| Corre UMA vez: analisa todos os setups, mostra a lista e, após confirmares, abre as ordens.")
+    src = src.replace('input long   MagicBase', 'input int    SignalBars        = 3;          // Aceitar sinais das últimas N velas fechadas\n'
+                      'input int    MaxNewPerKind     = 5;          // Máx. novas ordens 12C / 20C de uma vez\n'
+                      'input bool   AskConfirmation   = true;       // Pedir confirmação antes de abrir\n'
+                      'input long   MagicBase')
     return src

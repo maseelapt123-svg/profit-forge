@@ -26,7 +26,7 @@ export default function EaGuide() {
   const toast = useToast();
   const q = useQuery({ queryKey: ["ea-all"], queryFn: () => api<{ count: number; setups: EaSetup[] }>("/ea/all") });
   const dl = useMutation({
-    mutationFn: () => api<{ path: string }>("/ea/all/link", { method: "POST" }),
+    mutationFn: (script: boolean) => api<{ path: string }>(`/ea/all/link${script ? "?script=1" : ""}`, { method: "POST" }),
     onSuccess: (r) => Linking.openURL(`${BASE}${r.path}`),
     onError: (e: Error) => toast(e.message, "error"),
   });
@@ -81,11 +81,25 @@ export default function EaGuide() {
         )}
         <Button
           label={`Descarregar robô com ${q.data?.count ?? 0} setups (.mq5)`}
-          onPress={() => dl.mutate()}
-          loading={dl.isPending}
+          onPress={() => dl.mutate(false)}
+          loading={dl.isPending && dl.variables === false}
           disabled={!q.data?.count}
           testID="ea-download"
         />
+        <View style={styles.scriptCard} testID="ea-script-card">
+          <Text style={styles.cardTitle}>Script: abrir ordens com sinal agora</Text>
+          <Text style={styles.cardDesc}>
+            SmartTradeNow.mq5 corre uma vez: analisa todos os setups acima, mostra a lista de ordens com sinal (últimas 3 velas) e só abre depois de confirmares, com o teu risco, stop e alvo. Instala-se em MQL5 → Scripts (compila com F7) e arrasta-se para qualquer gráfico. Abre ordens a sério: se for conta real, o aviso indica «CONTA REAL».
+          </Text>
+          <Button
+            label="Descarregar script (.mq5)"
+            variant="ghost"
+            onPress={() => dl.mutate(true)}
+            loading={dl.isPending && dl.variables === true}
+            disabled={!q.data?.count}
+            testID="ea-download-script"
+          />
+        </View>
         <Text style={styles.hint}>
           Inclui todas as estratégias (Smart Money, RSI, EMA, MACD, Bollinger, Supertrend, Ichimoku, VWAP…), 12 Confirmações e Sniper 20, cada uma no timeframe, R:R, stop e nº de confirmações otimizados, filtro do TF superior, TP parcial, break-even e limite de posições. Os pares otimizados de 12C e Sniper 20 entram sempre (mesmo se desligados no robô da app); podes desligá-los no MT5 em EnableC12 / EnableC20. Se reotimizares na app, descarrega de novo. Se os símbolos da corretora tiverem sufixo (ex.: EURUSD.m), indica-o em SymbolSuffix. Testa sempre primeiro numa conta demo (ou no Strategy Tester do MT5).
         </Text>
@@ -110,9 +124,10 @@ const useStyles = makeStyles((c) => ({
   cardTitle: { color: c.onSurface, fontFamily: fonts.display, fontSize: 16 },
   cardDesc: { color: c.muted, fontFamily: fonts.text, fontSize: 13, lineHeight: 18 },
   section: { color: c.onSurface, fontFamily: fonts.display, fontSize: 18, marginTop: 8 },
+  scriptCard: { gap: 6, backgroundColor: c.surfaceSecondary, borderRadius: 12, borderWidth: 1, borderColor: c.border, padding: 16 },
   list: { backgroundColor: c.surfaceSecondary, borderRadius: 12, borderWidth: 1, borderColor: c.border, paddingVertical: 4 },
   setup: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10 },
-  badge: { fontFamily: fonts.displaySemi, fontSize: 11, width: 70 },
+  badge: { fontFamily: fonts.displaySemi, fontSize: 11, width: 62 },
   setupText: { flex: 1, color: c.onSurface, fontFamily: fonts.text, fontSize: 13 },
   setupMeta: { color: c.muted, fontFamily: fonts.text, fontSize: 11 },
   hint: { color: c.onSurfaceSecondary, fontFamily: fonts.text, fontSize: 12, lineHeight: 18 },

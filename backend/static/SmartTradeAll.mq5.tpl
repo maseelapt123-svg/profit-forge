@@ -27,6 +27,8 @@ input long   MagicBase         = 2600000;    // Número mágico base (cada setup
 __CONFIG__
 
 int SmcK = -1;
+int SigBars = 1;     // EA: só a última vela fechada · script: últimas N velas
+int StreamCap = 2;   // máx. novas entradas 12C/20C por ciclo
 void Confluence(double &sig[]);
 void Votes(int n, double &up[], double &dn[]);
 
@@ -589,19 +591,21 @@ void ManagePositions() {
    }
 }
 
-void Evaluate(int i, int &opened12, int &opened20) {
+// dry=true: só verifica e descreve a ordem em 'plan' (usado pelo script para pedir confirmação)
+bool Evaluate(int i, int &opened12, int &opened20, bool dry, string &plan) {
    string sym = Sym(i);
    int kind = CKind[i];
-   if((kind == 0 && !EnableSetups) || (kind == 1 && !EnableC12) || (kind == 2 && !EnableC20)) return;
-   if((kind == 1 && opened12 >= 2) || (kind == 2 && opened20 >= 2)) return;   // evita cestos de trades correlacionados
+   if((kind == 0 && !EnableSetups) || (kind == 1 && !EnableC12) || (kind == 2 && !EnableC20)) return false;
+   if((kind == 1 && opened12 >= StreamCap) || (kind == 2 && opened20 >= StreamCap)) return false;   // evita cestos de trades correlacionados
    datetime bt = iTime(sym, CTf[i], 1);
-   if(bt == 0 || bt == LastBar[i]) return;
+   if(bt == 0 || bt == LastBar[i]) return false;
    LastBar[i] = bt;
-   if(Blocked()) return;
-   if(!LoadBars(sym, CTf[i], BarsLoad)) return;
+   if(Blocked()) return false;
+   if(!LoadBars(sym, CTf[i], BarsLoad)) return false;
    int last = N - 1, s = 0;
    if(kind == 0) {
-      double sig[]; Signals(CStrat[i], sig); s = (int)sig[last];
+      double sig[]; Signals(CStrat[i], sig);
+      for(int k = last; k > last - SigBars && k >= 0; k--) if(sig[k] != 0) { s = (int)sig[k]; break; }
       if(s != 0 && CTrend[i] && CStrat[i] != "combo" && CStrat[i] != "confluence" && CStrat[i] != "confirm12" && CStrat[i] != "confirm20") {
          double e2[]; Ema(C, 200, e2); if(s != (C[last] > e2[last] ? 1 : -1)) s = 0;
       }
@@ -609,27 +613,35 @@ void Evaluate(int i, int &opened12, int &opened20) {
       double up[], dn[]; Votes(kind == 1 ? 12 : 20, up, dn);
       s = up[last] >= CMin[i] ? 1 : (dn[last] >= CMin[i] ? -1 : 0);
    }
-   if(s == 0) return;
-   if(CMtf[i] && CHtf[i] != PERIOD_CURRENT && HtfTrend(sym, CHtf[i]) != s) { PrintFormat("%s %s: sinal ignorado, contra a tendência do TF superior", sym, CLabel[i]); return; }
+   if(s == 0) return false;
+   if(CMtf[i] && CHtf[i] != PERIOD_CURRENT && HtfTrend(sym, CHtf[i]) != s) { PrintFormat("%s %s: sinal ignorado, contra a tendência do TF superior", sym, CLabel[i]); return false; }
    ulong t = MyTicket(i);
    if(t) {
       bool buy = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY;
-      if((buy ? 1 : -1) == s) return;
-      trade.SetExpertMagicNumber(MagicOf(i));
-      trade.PositionClose(t);
-      PrintFormat("%s %s: fechado por sinal contrário", sym, CLabel[i]);
+      if((buy ? 1 : -1) == s) return false;
    }
    int mx = kind == 0 ? MaxSetupPositions : (kind == 1 ? MaxC12Positions : MaxC20Positions);
-   if(CountKind(kind) >= mx) { PrintFormat("%s %s: limite de posições atingido", sym, CLabel[i]); return; }
+   if(!t && CountKind(kind) >= mx) { PrintFormat("%s %s: limite de posições atingido", sym, CLabel[i]); return false; }
    double a[]; Atr(14, a);
    double slDist = a[last] * CSl[i];
    double price = s > 0 ? SymbolInfoDouble(sym, SYMBOL_ASK) : SymbolInfoDouble(sym, SYMBOL_BID);
-   if(slDist <= 0 || price <= 0 || slDist < 8 * CFee[i] * price) return;   // stop curto demais face aos custos
+   if(slDist <= 0 || price <= 0 || slDist < 8 * CFee[i] * price) return false;   // stop curto demais face aos custos
    double pt = SymbolInfoDouble(sym, SYMBOL_POINT);
-   if(slDist < SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL) * pt) return;
+   if(slDist < SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL) * pt) return false;
    ENUM_ORDER_TYPE type = s > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    double lots = LotsForRisk(sym, slDist, type, price);
-   if(lots <= 0) { PrintFormat("%s %s: margem/risco insuficiente", sym, CLabel[i]); return; }
+   if(lots <= 0) { PrintFormat("%s %s: margem/risco insuficiente", sym, CLabel[i]); return false; }
+   if(dry) {
+      plan += StringFormat("%s %s %s · %.2f lotes%s\n", s > 0 ? "COMPRA" : "VENDA", sym, CLabel[i], lots, t ? " (inverte posição)" : "");
+      if(kind == 1) opened12++; if(kind == 2) opened20++;
+      return true;
+   }
+   if(t) {
+      trade.SetExpertMagicNumber(MagicOf(i));
+      trade.PositionClose(t);
+      PrintFormat("%s %s: fechado por sinal contrário", sym, CLabel[i]);
+      price = s > 0 ? SymbolInfoDouble(sym, SYMBOL_ASK) : SymbolInfoDouble(sym, SYMBOL_BID);
+   }
    int dg = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
    double sl = NormalizeDouble(price - s * slDist, dg), tp = NormalizeDouble(price + s * slDist * CRr[i], dg);
    trade.SetExpertMagicNumber(MagicOf(i));
@@ -637,8 +649,10 @@ void Evaluate(int i, int &opened12, int &opened20) {
    bool ok = s > 0 ? trade.Buy(lots, sym, price, sl, tp, cmt) : trade.Sell(lots, sym, price, sl, tp, cmt);
    if(ok) { if(kind == 1) opened12++; if(kind == 2) opened20++; PrintFormat("%s %s %s %.2f lotes · SL %s · TP %s", s > 0 ? "COMPRA" : "VENDA", sym, CLabel[i], lots, DoubleToString(sl, dg), DoubleToString(tp, dg)); }
    else PrintFormat("%s %s: ordem recusada (%d) %s", sym, CLabel[i], trade.ResultRetcode(), trade.ResultRetcodeDescription());
+   return ok;
 }
 
+//__RUNTIME__
 int OnInit() {
    ArrayResize(LastBar, NCFG); for(int i = 0; i < NCFG; i++) LastBar[i] = 0;
    SrvOffset = (long)(MathRound((double)(TimeTradeServer() - TimeGMT()) / 1800.0) * 1800);
@@ -655,7 +669,8 @@ void OnDeinit(const int reason) { EventKillTimer(); }
 void OnTimer() {
    ManagePositions();
    int o12 = 0, o20 = 0;
-   for(int i = 0; i < NCFG; i++) if(SymbolInfoInteger(Sym(i), SYMBOL_SELECT)) Evaluate(i, o12, o20);
+   string plan = "";
+   for(int i = 0; i < NCFG; i++) if(SymbolInfoInteger(Sym(i), SYMBOL_SELECT)) Evaluate(i, o12, o20, false, plan);
 }
 void OnTick() {}
 //+------------------------------------------------------------------+
