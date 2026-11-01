@@ -671,6 +671,12 @@ async def _go_mt(uid: str, bot: dict, pos: dict) -> bool:
     buy = pos["side"] == "BUY"
     entry = px["ask"] if buy else px["bid"]
     dist = abs(pos["entry"] - pos["stop_loss"])
+    spread = float(px["ask"]) - float(px["bid"])
+    if dist > 0 and spread > 0.3 * dist:
+        # e.g. crypto CFDs at the weekend: the spread alone would eat most of the stop (and the stop would sit inside it)
+        await bot_log(uid, "skip", f"{tag}: spread da corretora ({spread:.{int(sp.get('digits', 5))}f}) demasiado alto face ao stop "
+                                   f"({dist:.{int(sp.get('digits', 5))}f}) — fica só na conta simulada", pos["symbol"])
+        return True
     tick_val = px.get("lossTickValue") or sp.get("tickValue") or 0
     tick_size = sp.get("tickSize") or 10 ** -int(sp.get("digits", 5))
     if dist <= 0 or not tick_val:
