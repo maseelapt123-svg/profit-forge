@@ -88,11 +88,15 @@ async def trade(acc_id: str, region: str, body: dict) -> dict:
 
 
 def to_mt_symbol(symbol: str, suffix: str = "") -> Optional[str]:
-    """yfinance symbol → typical MetaTrader symbol (brokers may add a suffix like '.m')."""
+    """yfinance symbol -> typical MetaTrader symbol (brokers may add a suffix like '.m'); existence is checked by the caller."""
+    special = {"GC=F": "XAUUSD", "SI=F": "XAGUSD"}
+    if symbol in special:
+        return special[symbol] + suffix
     if symbol.endswith("=X"):
         return symbol[:-2] + suffix
-    special = {"GC=F": "XAUUSD", "SI=F": "XAGUSD", "BTC-USD": "BTCUSD", "ETH-USD": "ETHUSD"}
-    return special[symbol] + suffix if symbol in special else None
+    if symbol.endswith("-USD"):
+        return symbol.replace("-", "") + suffix
+    return symbol + suffix if symbol.isalpha() else None
 
 
 def lots(symbol: str, qty: float, max_lots: float) -> float:

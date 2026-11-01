@@ -23,7 +23,7 @@ type Bot = { setups?: Setup[]; mtf: boolean; ai_filter: boolean; conf_votes: num
   c20_enabled: boolean; c20_min: number; c20_max_positions: number; c20_tf: string; c20_rr: number; c20_ptp_r: number;
   c20_pairs?: { symbol: string; tf: string; rr: number; min: number; enabled: boolean; test: number | null }[];
   c12_pairs?: { symbol: string; tf: string; rr: number; min: number; enabled: boolean; test: number | null }[];
-  ptp_enabled: boolean; ptp_pct: number; ptp_r: number; live_mode: "paper" | "binance" | "metatrader"; live_max_usd: number;
+  ptp_enabled: boolean; ptp_pct: number; ptp_r: number; live_mode: "paper" | "binance" | "metatrader"; live_max_usd: number; live_until?: string;
   mt_max_lots: number; mt_suffix: string; trend_filter: boolean; enabled: boolean; symbols: string[]; tf: string; strategy: string; risk_pct: number; sl_atr: number; rr: number; max_positions: number; last_run?: string };
 type Resp = {
   bot: Bot; logs: { log_id: string; kind: string; msg: string; created_at: string }[];
@@ -243,12 +243,19 @@ export default function BotScreen() {
             testID="bot-exec-mode"
           />
           {cfg.live_mode === "metatrader" && (
-            <MtAccount
-              maxLots={cfg.mt_max_lots ?? 0.1}
-              suffix={cfg.mt_suffix ?? ""}
-              onMaxLots={(v) => upd({ mt_max_lots: v })}
-              onSuffix={(v) => upd({ mt_suffix: v })}
-            />
+            <>
+              {q.data?.bot?.live_until && (
+                <Text style={[styles.note, { paddingHorizontal: 16 }]} testID="bot-live-until">
+                  Teste em conta MetaTrader até {new Date(q.data.bot.live_until).toLocaleDateString("pt-PT")} — depois volta sozinho à conta simulada.
+                </Text>
+              )}
+              <MtAccount
+                maxLots={cfg.mt_max_lots ?? 0.1}
+                suffix={cfg.mt_suffix ?? ""}
+                onMaxLots={(v) => upd({ mt_max_lots: v })}
+                onSuffix={(v) => upd({ mt_suffix: v })}
+              />
+            </>
           )}
           {cfg.live_mode === "binance" && (
             <LiveAccount

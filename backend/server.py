@@ -5,6 +5,7 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import json
+import math
 import time
 import uuid
 import asyncio
@@ -642,27 +643,63 @@ async def _mt_acc(uid: str) -> Optional[dict]:
     return await db.live_accounts.find_one({"user_id": uid, "kind": "mt"}, {"_id": 0})
 
 
+_mt_symbols_cache: Dict[str, tuple] = {}
+
+
 async def _go_mt(uid: str, bot: dict, pos: dict) -> bool:
-    """Send the entry to the MetaTrader account (with SL/TP on the broker, so it shows in the MT app)."""
+    """Send the entry to the MetaTrader account (with SL/TP on the broker, so it shows in the MT app).
+    Size = risk % of the REAL MT equity using the broker's tick value (not the simulated balance)."""
     tag = display(pos["symbol"])
-    mt_sym = metaapi_exec.to_mt_symbol(pos["symbol"], bot.get("mt_suffix", ""))
-    if not mt_sym:
-        return True  # stocks etc. stay on the simulated account
     acc = await _mt_acc(uid)
     if not metaapi_exec.configured() or not acc:
         await bot_log(uid, "skip", f"{tag}: conta MetaTrader não ligada — entrada cancelada", pos["symbol"])
         return False
-    vol = metaapi_exec.lots(pos["symbol"], pos["qty"], float(bot.get("mt_max_lots", 0.1)))
-    dec = price_decimals(pos["entry"])
-    body = {"actionType": "ORDER_TYPE_BUY" if pos["side"] == "BUY" else "ORDER_TYPE_SELL", "symbol": mt_sym, "volume": vol,
-            "stopLoss": round(pos["stop_loss"], dec), "takeProfit": round(pos["take_profit"], dec), "comment": "SmartTrade"}
+    aid, reg = acc["account_id"], acc["region"]
     try:
-        r = await metaapi_exec.trade(acc["account_id"], acc["region"], body)
+        names = _mt_symbols_cache.get(aid)
+        if not names or names[0] < time.time() - 3600:
+            names = _mt_symbols_cache[aid] = (time.time(), set(await metaapi_exec.symbols(aid, reg)))
+        mt_sym = metaapi_exec.to_mt_symbol(pos["symbol"], bot.get("mt_suffix", ""))
+        if not mt_sym or mt_sym not in names[1]:
+            return True  # not offered by this broker -> stays on the simulated account
+        sp = await metaapi_exec.spec(aid, reg, mt_sym)
+        px = await metaapi_exec.price(aid, reg, mt_sym)
+        inf = await metaapi_exec.info(aid, reg)
+    except (metaapi_exec.MetaApiError, httpx.HTTPError) as e:
+        await bot_log(uid, "skip", f"{tag}: MetaTrader indisponível ({e})", pos["symbol"])
+        return False
+    buy = pos["side"] == "BUY"
+    entry = px["ask"] if buy else px["bid"]
+    dist = abs(pos["entry"] - pos["stop_loss"])
+    tick_val = px.get("lossTickValue") or sp.get("tickValue") or 0
+    tick_size = sp.get("tickSize") or 10 ** -int(sp.get("digits", 5))
+    if dist <= 0 or not tick_val:
+        return False
+    loss_per_lot = dist / tick_size * tick_val
+    cur = inf.get("currency", "")
+    risk = float(inf.get("equity", 0)) * float(bot.get("risk_pct", 1)) / 100
+    step, vmin = float(sp.get("volumeStep", 0.01)), float(sp.get("minVolume", 0.01))
+    vol = min(float(bot.get("mt_max_lots", 0.1)), float(sp.get("maxVolume", 100)), math.floor(risk / loss_per_lot / step + 1e-9) * step)
+    if vol < vmin:
+        if vmin * loss_per_lot > 2 * risk:
+            await bot_log(uid, "skip", f"{tag}: lote mínimo {vmin} arriscaria {vmin * loss_per_lot:.2f} {cur} "
+                                       f"(> 2x o risco de {risk:.2f}) — fica só na conta simulada", pos["symbol"])
+            return True
+        vol = vmin
+    vol = round(vol, 2)
+    dg = int(sp.get("digits", 5))
+    sgn = 1 if buy else -1
+    body = {"actionType": "ORDER_TYPE_BUY" if buy else "ORDER_TYPE_SELL", "symbol": mt_sym, "volume": vol,
+            "stopLoss": round(entry - sgn * dist, dg), "takeProfit": round(entry + sgn * abs(pos["take_profit"] - pos["entry"]), dg),
+            "comment": "SmartTrade"}
+    try:
+        r = await metaapi_exec.trade(aid, reg, body)
     except (metaapi_exec.MetaApiError, httpx.HTTPError) as e:
         await bot_log(uid, "skip", f"{tag}: MetaTrader recusou a ordem ({e})", pos["symbol"])
         return False
     pos["live"] = {"exchange": "mt", "symbol": mt_sym, "volume": vol, "mt_position": r.get("positionId") or r.get("orderId")}
-    await bot_log(uid, "open", f"MetaTrader: {pos['side']} {vol} lote(s) {mt_sym} (posição {pos['live']['mt_position']})", pos["symbol"])
+    await bot_log(uid, "open", f"MetaTrader: {pos['side']} {vol} lote(s) {mt_sym} @ {entry} · risco ~{vol * loss_per_lot:.2f} {cur} "
+                               f"(posição {pos['live']['mt_position']})", pos["symbol"])
     return True
 
 
@@ -1616,6 +1653,11 @@ async def _run_bot_cycle(bot: dict) -> int:
     """One pass: evaluate each symbol's last CLOSED bar and open/close bot positions. Returns trades opened."""
     uid = bot["user_id"]
     bot = await get_bot(uid)  # fresh state (last_bar) under the lock
+    lu = bot.get("live_until")
+    if bot.get("live_mode") == "metatrader" and lu and lu < datetime.now(timezone.utc).isoformat():
+        await db.bots.update_one({"user_id": uid}, {"$set": {"live_mode": "paper"}, "$unset": {"live_until": ""}})
+        await bot_log(uid, "info", "Período de teste MetaTrader terminado — robô voltou à conta simulada (as posições abertas mantêm o stop/alvo)")
+        bot["live_mode"] = "paper"
     await check_exits(uid)
     plugins = await user_plugins(uid)
     plugins["_conf"] = {"min_votes": bot.get("conf_votes", 2), "min_score": bot.get("conf_score", 55.0)}
@@ -1777,7 +1819,12 @@ async def bot_put(body: BotIn, request: Request):
     data["symbols"] = syms
     data["setups"] = [st.model_dump() for st in body.setups if st.symbol in syms]
     data.pop("overrides", None)
-    await db.bots.update_one({"user_id": u["user_id"]}, {"$set": {**data, "updated_at": datetime.now(timezone.utc).isoformat()}, "$unset": {"overrides": ""}}, upsert=True)
+    unset = {"overrides": ""}
+    if data.get("live_mode") == "metatrader" and prev.get("live_mode") != "metatrader":
+        data["live_until"] = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()  # 1-week demo run, then back to paper
+    elif data.get("live_mode") != "metatrader":
+        unset["live_until"] = ""
+    await db.bots.update_one({"user_id": u["user_id"]}, {"$set": {**data, "updated_at": datetime.now(timezone.utc).isoformat()}, "$unset": unset}, upsert=True)
     if body.enabled != prev["enabled"]:
         await bot_log(u["user_id"], "status", "Robô ativado" if body.enabled else "Robô parado")
     return {"ok": True}
