@@ -1786,11 +1786,15 @@ async def _mt_optimize(job: dict):
             job["step"] += len(MT_OPT_TFS)
             job["found"] = {"setups": len(setups), "c12": len(c12), "c20": len(c20)}
             await _save_mt_job(job)
-        # one setup per symbol/tf; the bot trades every symbol that has at least one profitable plan
-        syms = sorted({x["symbol"] for x in setups} | set(c12) | set(c20))
+        # one setup per symbol/tf; the bot trades every symbol that has at least one profitable plan.
+        # The bot's existing forex/gold setups are kept next to the new ones (user choice).
+        new_keys = {(x["symbol"], x["tf"]) for x in setups}
+        kept_fx = [x for x in (bot.get("setups") or []) if ASSET_INFO.get(x["symbol"], {}).get("category") == "forex"
+                   and (x["symbol"], x["tf"]) not in new_keys]
+        syms = sorted({x["symbol"] for x in setups} | set(c12) | set(c20) | {x["symbol"] for x in kept_fx})
         if syms:
             await db.bots.update_one({"user_id": uid}, {"$set": {
-                "symbols": syms, "setups": [{k: v for k, v in x.items() if k != "test"} for x in setups],
+                "symbols": syms, "setups": [{k: v for k, v in x.items() if k != "test"} for x in setups] + kept_fx,
                 "c12_pairs": list(c12.values()), "c20_pairs": list(c20.values()),
                 "c12_enabled": bool(c12), "c20_enabled": bool(c20)}})
         job["found"] = {"setups": len(setups), "c12": len(c12), "c20": len(c20)}
