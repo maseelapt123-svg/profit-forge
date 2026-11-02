@@ -585,7 +585,7 @@ def strategy_signals(df: pd.DataFrame, strategy: str, plugins: dict) -> np.ndarr
     return np.where(sig == trend, sig, 0)
 
 
-FEES = {"crypto": 0.0004, "forex": 0.00003, "stocks": 0.0001}  # per side, realistic spread/commission
+FEES = {"crypto": 0.0004, "forex": 0.00003, "stocks": 0.0001, "indices": 0.0001}  # per side, realistic spread/commission
 
 
 def trend_filtered(df: pd.DataFrame, sig: np.ndarray) -> np.ndarray:

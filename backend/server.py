@@ -53,14 +53,26 @@ ASSETS = {
     "crypto": [
         ("BTC-USD", "Bitcoin"), ("ETH-USD", "Ethereum"), ("SOL-USD", "Solana"),
         ("BNB-USD", "BNB"), ("XRP-USD", "XRP"), ("ADA-USD", "Cardano"),
+        ("LTC-USD", "Litecoin"), ("DOGE-USD", "Dogecoin"), ("DOT-USD", "Polkadot"), ("BCH-USD", "Bitcoin Cash"),
+        ("XLM-USD", "Stellar"), ("TRX-USD", "Tron"), ("ETC-USD", "Ethereum Classic"), ("AVAX-USD", "Avalanche"),
+        ("FIL-USD", "Filecoin"), ("ALGO-USD", "Algorand"),
     ],
     "forex": [
         ("EURUSD=X", "EUR/USD"), ("GBPUSD=X", "GBP/USD"), ("USDJPY=X", "USD/JPY"),
         ("AUDUSD=X", "AUD/USD"), ("USDCHF=X", "USD/CHF"), ("GC=F", "Ouro (XAU)"),
+        ("NZDUSD=X", "NZD/USD"), ("USDCAD=X", "USD/CAD"), ("EURGBP=X", "EUR/GBP"), ("EURJPY=X", "EUR/JPY"),
+        ("GBPJPY=X", "GBP/JPY"), ("AUDJPY=X", "AUD/JPY"), ("EURAUD=X", "EUR/AUD"), ("EURCHF=X", "EUR/CHF"),
+        ("GBPCHF=X", "GBP/CHF"), ("AUDNZD=X", "AUD/NZD"), ("CADJPY=X", "CAD/JPY"), ("EURCAD=X", "EUR/CAD"),
+        ("GBPAUD=X", "GBP/AUD"), ("AUDCAD=X", "AUD/CAD"), ("CHFJPY=X", "CHF/JPY"), ("EURNZD=X", "EUR/NZD"),
+        ("GBPCAD=X", "GBP/CAD"), ("GBPNZD=X", "GBP/NZD"), ("SI=F", "Prata (XAG)"),
     ],
     "stocks": [
         ("AAPL", "Apple"), ("NVDA", "NVIDIA"), ("TSLA", "Tesla"),
         ("MSFT", "Microsoft"), ("AMZN", "Amazon"), ("META", "Meta"),
+    ],
+    "indices": [
+        ("^NDX", "Nasdaq 100"), ("^GSPC", "S&P 500"), ("^DJI", "Dow Jones 30"), ("^GDAXI", "DAX 40"),
+        ("^FTSE", "FTSE 100"), ("^FCHI", "CAC 40"), ("^HSI", "Hang Seng 50"), ("CL=F", "Petróleo WTI"), ("BZ=F", "Petróleo Brent"),
     ],
 }
 ASSET_INFO = {s: {"symbol": s, "name": n, "category": c} for c, lst in ASSETS.items() for s, n in lst}
@@ -81,6 +93,8 @@ _cache: Dict[tuple, tuple] = {}
 
 
 def display(symbol: str) -> str:
+    if symbol in ASSET_INFO and ASSET_INFO[symbol]["category"] == "indices":
+        return ASSET_INFO[symbol]["name"]
     return symbol.replace("-USD", "/USD").replace("=X", "").replace("=F", "")
 
 
@@ -644,6 +658,7 @@ async def _mt_acc(uid: str) -> Optional[dict]:
 
 
 _mt_symbols_cache: Dict[str, tuple] = {}
+MT_MAX_SPREAD_OF_STOP = 0.2  # skip MT entries whose spread is more than 20% of the stop distance
 
 
 async def _go_mt(uid: str, bot: dict, pos: dict) -> bool:
@@ -672,6 +687,11 @@ async def _go_mt(uid: str, bot: dict, pos: dict) -> bool:
     entry = px["ask"] if buy else px["bid"]
     sig_dist = abs(pos["entry"] - pos["stop_loss"])
     spread = max(0.0, float(px["ask"]) - float(px["bid"]))
+    if sig_dist > 0 and spread > MT_MAX_SPREAD_OF_STOP * sig_dist:
+        dg0 = int(sp.get("digits", 5))
+        await bot_log(uid, "skip", f"{tag}: spread {spread:.{dg0}f} é {spread / sig_dist * 100:.0f}% do stop (máx. "
+                                   f"{MT_MAX_SPREAD_OF_STOP * 100:.0f}%) — não entra no MetaTrader", pos["symbol"])
+        return False
     # the stop is placed beyond the spread (otherwise MT rejects it / it is hit instantly); the lot is sized on this
     # wider stop, so the money at risk stays at risk_pct of the MT equity
     dist = sig_dist + spread + float(sp.get("stopsLevel", 0) or 0) * float(sp.get("point") or 0)
@@ -1683,6 +1703,136 @@ async def bot_optimize_all(request: Request):
     return {"job_id": job_id}
 
 
+MT_OPT_TFS = ["5m", "15m", "1h", "4h", "1d"]  # 1–3m: broker spreads are bigger than the moves
+_POOL = None
+
+
+def _proc_pool():
+    """Separate processes for the heavy walk-forward search (real parallelism, keeps the bot loop responsive)."""
+    global _POOL
+    if _POOL is None:
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+        _POOL = ProcessPoolExecutor(max_workers=min(5, max(1, (os.cpu_count() or 2) - 1)), mp_context=multiprocessing.get_context("spawn"))
+    return _POOL
+
+
+async def _mt_optimize(job: dict):
+    """Optimise strategies + 12C + Sniper 20 for EVERY broker symbol we have data for, with the broker's real spread
+    as cost, and reject setups whose stop is too small for that spread (> 20%). The result becomes the bot portfolio."""
+    uid = job["user_id"]
+    try:
+        acc = await _mt_acc(uid)
+        aid, reg = acc["account_id"], acc["region"]
+        bot = await get_bot(uid)
+        plugins = await user_plugins(uid)
+        thr_c = float(bot.get("c_min_return", MIN_C_RETURN))
+        names = set(await metaapi_exec.symbols(aid, reg))
+        cands = [(s, metaapi_exec.to_mt_symbol(s, bot.get("mt_suffix", ""))) for s in ASSET_INFO]
+        cands = [(s, m) for s, m in cands if m in names]
+        job["current"] = "A medir os spreads na corretora"
+        spreads = {}
+        for s, m in cands:
+            for attempt in range(2):
+                try:
+                    px = await metaapi_exec.price(aid, reg, m)
+                    if px.get("bid") and px.get("ask"):
+                        spreads[s] = {"mt": m, "abs": float(px["ask"]) - float(px["bid"]), "pct": (float(px["ask"]) - float(px["bid"])) / float(px["bid"])}
+                    break
+                except (metaapi_exec.MetaApiError, httpx.HTTPError):
+                    await asyncio.sleep(3)
+        if not spreads:
+            raise RuntimeError("a MetaApi não devolveu preços (conta desligada da corretora?) — tenta de novo daqui a pouco")
+        job["symbols"] = list(spreads)
+        job["spreads"] = {display(s): round(v["pct"] * 100, 4) for s, v in spreads.items()}
+        job["total"] = len(spreads) * len(MT_OPT_TFS)
+        await _save_mt_job(job)
+        setups, c12, c20 = [], {}, {}
+        loop = asyncio.get_running_loop()
+        for s, sp in spreads.items():
+            fee = max(FEES[ASSET_INFO[s]["category"]], sp["pct"] / 2)  # simulate charges fee per side → round trip = spread
+            job["current"] = f"{display(s)} · spread {sp['pct'] * 100:.3f}%"
+            ready = []  # (tf, df, htf, atr) that can fit the spread at all
+            for tf in MT_OPT_TFS:
+                try:
+                    df = await get_df(s, tf, long=True)
+                    if len(df) < 600:
+                        continue
+                    a = float(atr(df).iloc[-1])
+                    if sp["abs"] > MT_MAX_SPREAD_OF_STOP * 3.0 * a:  # not even the widest stop (3×ATR) fits this spread
+                        continue
+                    ready.append((tf, df, await get_htf(s, tf), a))
+                except HTTPException:
+                    continue
+            outs = await asyncio.gather(*[loop.run_in_executor(_proc_pool(), optimize, df, plugins, fee, 1.0, 10000.0, 0.7, htf)
+                                          for _, df, htf, _ in ready], return_exceptions=True)
+            for (tf, df, htf, a), out in zip(ready, outs):
+                ok_stop = lambda k: sp["abs"] <= MT_MAX_SPREAD_OF_STOP * k * a  # noqa: E731
+                b = None if isinstance(out, BaseException) else out["best"]
+                if isinstance(out, BaseException):
+                    logger.warning("mt optimize %s %s: %s", s, tf, out)
+                if b and b["test"]["return_pct"] > MIN_BOT_RETURN and ok_stop(b["sl_atr"]):
+                    setups.append({"symbol": s, "tf": tf, "strategy": b["strategy"], "sl_atr": b["sl_atr"], "rr": b["rr"],
+                                   "trend_filter": b["trend_filter"], "mtf": b["mtf"], "test": round(b["test"]["return_pct"], 1)})
+                if ok_stop(bot["sl_atr"]):
+                    for kind, store in (("c12", c12), ("c20", c20)):
+                        try:
+                            g = await asyncio.to_thread(_c20_grid, df, htf, fee, bot, kind)
+                        except Exception:
+                            logger.exception("mt optimize %s %s %s", kind, s, tf)
+                            continue
+                        if g and g["test"] > thr_c and (s not in store or g["test"] > store[s]["test"]):
+                            store[s] = {"symbol": s, "display": display(s), "enabled": True, "tf": tf, **g}
+            job["step"] += len(MT_OPT_TFS)
+            job["found"] = {"setups": len(setups), "c12": len(c12), "c20": len(c20)}
+            await _save_mt_job(job)
+        # one setup per symbol/tf; the bot trades every symbol that has at least one profitable plan
+        syms = sorted({x["symbol"] for x in setups} | set(c12) | set(c20))
+        if syms:
+            await db.bots.update_one({"user_id": uid}, {"$set": {
+                "symbols": syms, "setups": [{k: v for k, v in x.items() if k != "test"} for x in setups],
+                "c12_pairs": list(c12.values()), "c20_pairs": list(c20.values()),
+                "c12_enabled": bool(c12), "c20_enabled": bool(c20)}})
+        job["found"] = {"setups": len(setups), "c12": len(c12), "c20": len(c20)}
+        job["results"] = {"setups": sorted(setups, key=lambda x: -x["test"]),
+                          "c12": sorted(c12.values(), key=lambda x: -x["test"]), "c20": sorted(c20.values(), key=lambda x: -x["test"])}
+        job["applied"] = bool(syms)
+        await bot_log(uid, "fix", f"Otimizador MetaTrader: {len(spreads)} pares testados com o spread real · {len(syms)} pares no robô "
+                                  f"({len(setups)} setups, {len(c12)} 12C, {len(c20)} Sniper 20)")
+        job["status"] = "done"
+    except Exception as e:
+        logger.exception("mt optimize job failed")
+        job["status"], job["error"] = "error", str(e)
+    finally:
+        job["current"] = None
+        await _save_mt_job(job)
+
+
+async def _save_mt_job(job: dict) -> None:
+    await db.mt_opt_jobs.update_one({"job_id": job["job_id"]}, {"$set": dict(job)}, upsert=True)
+
+
+@api.post("/bot/mt-optimize")
+async def mt_optimize_start(request: Request):
+    u = await get_user(request)
+    if not metaapi_exec.configured() or not await _mt_acc(u["user_id"]):
+        raise HTTPException(400, "Liga primeiro uma conta MetaTrader")
+    if await db.mt_opt_jobs.find_one({"user_id": u["user_id"], "status": "running", "started": {"$gt": time.time() - 6 * 3600}}):
+        raise HTTPException(429, "Já tens uma otimização MetaTrader em curso")
+    job = {"job_id": uuid.uuid4().hex[:12], "user_id": u["user_id"], "status": "running", "started": time.time(),
+           "current": "A ler os símbolos da corretora", "step": 0, "total": 0, "found": {"setups": 0, "c12": 0, "c20": 0}}
+    await _save_mt_job(job)
+    asyncio.create_task(_mt_optimize(job))
+    return {"job_id": job["job_id"]}
+
+
+@api.get("/bot/mt-optimize/current")
+async def mt_optimize_current(request: Request):
+    u = await get_user(request)
+    job = await db.mt_opt_jobs.find_one({"user_id": u["user_id"]}, {"_id": 0, "user_id": 0}, sort=[("started", -1)])
+    return job or {}
+
+
 @api.get("/bot/optimize-all/current")
 async def bot_optimize_all_current(request: Request):
     u = await get_user(request)
@@ -2622,6 +2772,7 @@ async def startup():
     asyncio.create_task(hfx_router.loop())
     await db.bot_opt_jobs.create_index("job_id", unique=True)
     await resume_opt_jobs()
+    await db.mt_opt_jobs.update_many({"status": "running"}, {"$set": {"status": "error", "error": "interrompido por reinício do servidor — carrega em Otimizar de novo", "current": None}})
     await db.hfx_trades.create_index([("status", 1), ("expires_ts", 1)])
     await db.hfx_trades.create_index([("user_id", 1), ("status", 1)])
     await db.hfx_bots.create_index("user_id", unique=True)

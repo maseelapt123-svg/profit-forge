@@ -71,7 +71,7 @@ export default function MtPanel() {
           data={q.data?.positions ?? []}
           keyExtractor={(p) => p.id}
           contentContainerStyle={{ padding: 16, gap: 10, paddingBottom: insets.bottom + 24 }}
-          refreshControl={<RefreshControl refreshing={q.isFetching && !q.isLoading} onRefresh={() => q.refetch()} tintColor={colors.brandPrimary} />}
+          refreshControl={<RefreshControl refreshing={q.isFetching && !q.isLoading} onRefresh={() => void q.refetch()} tintColor={colors.brandPrimary} />}
           ListHeaderComponent={
             <View style={{ gap: 10 }}>
               <View style={styles.hero} testID="mt-panel-summary">

@@ -164,7 +164,7 @@ export default function Backtest() {
             value={cat}
             onChange={(v) => {
               setCat(v);
-              setSymbol({ crypto: "BTC-USD", forex: "EURUSD=X", stocks: "AAPL" }[v]);
+              setSymbol({ crypto: "BTC-USD", forex: "EURUSD=X", stocks: "AAPL", indices: "^GSPC" }[v]);
             }}
             testID="bt-category"
           />

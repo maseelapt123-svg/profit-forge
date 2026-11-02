@@ -89,7 +89,9 @@ async def trade(acc_id: str, region: str, body: dict) -> dict:
 
 def to_mt_symbol(symbol: str, suffix: str = "") -> Optional[str]:
     """yfinance symbol -> typical MetaTrader symbol (brokers may add a suffix like '.m'); existence is checked by the caller."""
-    special = {"GC=F": "XAUUSD", "SI=F": "XAGUSD"}
+    special = {"GC=F": "XAUUSD", "SI=F": "XAGUSD", "CL=F": "USOUSD", "BZ=F": "UKOUSD",
+               "^NDX": "NAS100", "^GSPC": "SP500", "^DJI": "DJ30", "^GDAXI": "GER40", "^FTSE": "UK100", "^FCHI": "FRA40", "^HSI": "HK50",
+               "DOGE-USD": "DOGUSD", "AVAX-USD": "AVAUSD", "ALGO-USD": "ALGUSD", "AMZN": "AMAZON", "NVDA": "NVIDIA"}
     if symbol in special:
         return special[symbol] + suffix
     if symbol.endswith("=X"):

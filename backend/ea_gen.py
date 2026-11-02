@@ -13,16 +13,8 @@ STRAT_NAMES = {"c12": "12C", "c20": "20C"}
 
 
 def mt_symbol(symbol: str) -> Optional[str]:
-    special = {"GC=F": "XAUUSD", "SI=F": "XAGUSD"}
-    if symbol in special:
-        return special[symbol]
-    if symbol.endswith("=X"):
-        return symbol[:-2]
-    if symbol.endswith("-USD"):
-        return symbol.replace("-", "")
-    if symbol.isalpha():
-        return symbol  # stocks: same ticker on most CFD brokers
-    return None
+    from metaapi_exec import to_mt_symbol
+    return to_mt_symbol(symbol)
 
 
 def build_configs(bot: dict, htf_map: dict, fees: dict, asset_info: dict) -> list:
