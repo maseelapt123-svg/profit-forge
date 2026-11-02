@@ -670,13 +670,12 @@ async def _go_mt(uid: str, bot: dict, pos: dict) -> bool:
         return False
     buy = pos["side"] == "BUY"
     entry = px["ask"] if buy else px["bid"]
-    dist = abs(pos["entry"] - pos["stop_loss"])
-    spread = float(px["ask"]) - float(px["bid"])
-    if dist > 0 and spread > 0.3 * dist:
-        # e.g. crypto CFDs at the weekend: the spread alone would eat most of the stop (and the stop would sit inside it)
-        await bot_log(uid, "skip", f"{tag}: spread da corretora ({spread:.{int(sp.get('digits', 5))}f}) demasiado alto face ao stop "
-                                   f"({dist:.{int(sp.get('digits', 5))}f}) — fica só na conta simulada", pos["symbol"])
-        return True
+    sig_dist = abs(pos["entry"] - pos["stop_loss"])
+    spread = max(0.0, float(px["ask"]) - float(px["bid"]))
+    # the stop is placed beyond the spread (otherwise MT rejects it / it is hit instantly); the lot is sized on this
+    # wider stop, so the money at risk stays at risk_pct of the MT equity
+    dist = sig_dist + spread + float(sp.get("stopsLevel", 0) or 0) * float(sp.get("point") or 0)
+    tp_dist = abs(pos["take_profit"] - pos["entry"]) + spread
     tick_val = px.get("lossTickValue") or sp.get("tickValue") or 0
     tick_size = sp.get("tickSize") or 10 ** -int(sp.get("digits", 5))
     if dist <= 0 or not tick_val:
@@ -687,16 +686,12 @@ async def _go_mt(uid: str, bot: dict, pos: dict) -> bool:
     step, vmin = float(sp.get("volumeStep", 0.01)), float(sp.get("minVolume", 0.01))
     vol = min(float(bot.get("mt_max_lots", 0.1)), float(sp.get("maxVolume", 100)), math.floor(risk / loss_per_lot / step + 1e-9) * step)
     if vol < vmin:
-        if vmin * loss_per_lot > 2 * risk:
-            await bot_log(uid, "skip", f"{tag}: lote mínimo {vmin} arriscaria {vmin * loss_per_lot:.2f} {cur} "
-                                       f"(> 2x o risco de {risk:.2f}) — fica só na conta simulada", pos["symbol"])
-            return True
-        vol = vmin
+        vol = vmin  # user choice: always open on MT — with the minimum lot even if that risks more than risk_pct
     vol = round(vol, 2)
     dg = int(sp.get("digits", 5))
     sgn = 1 if buy else -1
     body = {"actionType": "ORDER_TYPE_BUY" if buy else "ORDER_TYPE_SELL", "symbol": mt_sym, "volume": vol,
-            "stopLoss": round(entry - sgn * dist, dg), "takeProfit": round(entry + sgn * abs(pos["take_profit"] - pos["entry"]), dg),
+            "stopLoss": round(entry - sgn * dist, dg), "takeProfit": round(entry + sgn * tp_dist, dg),
             "comment": "SmartTrade"}
     try:
         r = await metaapi_exec.trade(aid, reg, body)
@@ -704,6 +699,10 @@ async def _go_mt(uid: str, bot: dict, pos: dict) -> bool:
         await bot_log(uid, "skip", f"{tag}: MetaTrader recusou a ordem ({e})", pos["symbol"])
         return False
     pos["live"] = {"exchange": "mt", "symbol": mt_sym, "volume": vol, "mt_position": r.get("positionId") or r.get("orderId")}
+    # keep the app's position identical to the broker's (entry at the broker price, stop/target beyond the spread)
+    pos.update({"entry": entry, "stop_loss": body["stopLoss"], "take_profit": body["takeProfit"]})
+    if pos.get("stop_dist"):
+        pos["stop_dist"] = dist
     await bot_log(uid, "open", f"MetaTrader: {pos['side']} {vol} lote(s) {mt_sym} @ {entry} · risco ~{vol * loss_per_lot:.2f} {cur} "
                                f"(posição {pos['live']['mt_position']})", pos["symbol"])
     return True
@@ -721,6 +720,13 @@ async def _mt_trade(p: dict, body: dict, what: str) -> bool:
         return False
 
 
+async def _mt_breakeven(p: dict) -> None:
+    """Mirror a break-even stop move to the MetaTrader position (so the MT app shows it too)."""
+    if (p.get("live") or {}).get("exchange") == "mt":
+        dec = price_decimals(p["entry"])
+        await _mt_trade(p, {"actionType": "POSITION_MODIFY", "stopLoss": round(p["entry"], dec), "takeProfit": round(p["take_profit"], dec)}, "break-even")
+
+
 async def _live_sell(p: dict, qty: float, label: str) -> Optional[float]:
     """Sell `qty` on Binance for a live position. Returns the fill price, or None if it failed (logged)."""
     lv = p.get("live")
@@ -729,11 +735,9 @@ async def _live_sell(p: dict, qty: float, label: str) -> Optional[float]:
     if lv.get("exchange") == "mt":
         if label == "c":  # full close (may already be closed by MT's own SL/TP — error is only logged)
             await _mt_trade(p, {"actionType": "POSITION_CLOSE_ID"}, "fecho")
-        else:  # partial close then stop to break-even
+        else:  # partial close (the stop is moved to break-even by check_exits when that option is on)
             vol = max(0.01, round(lv["volume"] * qty / max(p["qty"], 1e-12), 2))
-            if await _mt_trade(p, {"actionType": "POSITION_PARTIAL", "volume": vol}, "parcial"):
-                await _mt_trade(p, {"actionType": "POSITION_MODIFY", "stopLoss": round(p["entry"], price_decimals(p["entry"])),
-                                    "takeProfit": round(p["take_profit"], price_decimals(p["entry"]))}, "break-even")
+            await _mt_trade(p, {"actionType": "POSITION_PARTIAL", "volume": vol}, "parcial")
         return None
     try:
         r = await binance_exec.market_sell(lv["pair"], qty, f"sx{p['position_id']}{label}"[:36])
@@ -855,7 +859,7 @@ BOT_DEFAULT = {"enabled": False, "symbols": ["BTC-USD", "ETH-USD", "EURUSD=X"], 
                "risk_pct": 1.0, "sl_atr": 1.5, "rr": 2.0, "max_positions": 30, "ai_filter": False,
                "conf_votes": 2, "conf_score": 55.0, "c12_enabled": False, "c12_min": 10, "c12_max_positions": 30, "c12_tf": "1h",
                "c20_enabled": False, "c20_min": 16, "c20_max_positions": 30, "c20_tf": "1h", "c20_rr": 5.0, "c20_ptp_r": 2.0,
-               "ptp_enabled": True, "ptp_pct": 50.0, "ptp_r": 1.0, "c20_pairs": [], "c12_pairs": [], "live_mode": "paper", "live_max_usd": 50.0,
+               "ptp_enabled": True, "breakeven_enabled": True, "ptp_pct": 50.0, "ptp_r": 1.0, "c20_pairs": [], "c12_pairs": [], "live_mode": "paper", "live_max_usd": 50.0,
                "mt_max_lots": 0.1, "mt_suffix": ""}
 
 
@@ -900,6 +904,7 @@ class BotIn(BaseModel):
     mt_max_lots: float = Field(0.1, ge=0.01, le=50)
     mt_suffix: str = Field("", max_length=8)
     ptp_enabled: bool = True
+    breakeven_enabled: bool = True
     ptp_pct: float = Field(50, ge=10, le=90)
     ptp_r: float = Field(1.0, ge=0.5, le=5)
     setups: List[BotSetup] = []
@@ -917,6 +922,8 @@ async def bot_log(user_id: str, kind: str, msg: str, symbol: Optional[str] = Non
 
 async def check_exits(user_id: str):
     open_pos = await db.positions.find({"user_id": user_id, "status": "open"}, {"_id": 0}).to_list(200)
+    bset = await db.bots.find_one({"user_id": user_id}, {"_id": 0, "ptp_enabled": 1, "breakeven_enabled": 1}) or {}
+    ptp_on, be_on = bset.get("ptp_enabled", True), bset.get("breakeven_enabled", True)
     for p in open_pos:
         q = await quote(p["symbol"])
         if not q:
@@ -927,7 +934,7 @@ async def check_exits(user_id: str):
             reason = "stop_loss"
         elif p.get("take_profit") and ((long and px >= p["take_profit"]) or (not long and px <= p["take_profit"])):
             reason = "take_profit"
-        if not reason and p.get("ptp_pct") and not p.get("ptp_done") and p.get("stop_dist"):
+        if not reason and ptp_on and p.get("ptp_pct") and not p.get("ptp_done") and p.get("stop_dist"):
             d = 1 if long else -1
             lvl = p["entry"] + d * p["stop_dist"] * p["ptp_r"]
             if (long and px >= lvl) or (not long and px <= lvl):
@@ -936,16 +943,19 @@ async def check_exits(user_id: str):
                     fill = await _live_sell(p, q, "p")
                     lvl = fill or lvl
                 part = (lvl - p["entry"]) * q * d
-                await db.positions.update_one({"position_id": p["position_id"]}, {
-                    "$set": {"ptp_done": True, "stop_loss": p["entry"], "be": True},
-                    "$inc": {"qty": -q, "realized": part}})
+                upd = {"ptp_done": True, **({"stop_loss": p["entry"], "be": True} if be_on else {})}
+                await db.positions.update_one({"position_id": p["position_id"]}, {"$set": upd, "$inc": {"qty": -q, "realized": part}})
                 await db.accounts.update_one({"user_id": user_id}, {"$inc": {"balance": part}})
-                await bot_log(user_id, "ptp", f"{display(p['symbol'])}: parcial {p['ptp_pct']:.0f}% fechada a +{p['ptp_r']:g}R ({part:+.2f} $), stop em break-even", p["symbol"])
+                if be_on:
+                    await _mt_breakeven(p)
+                await bot_log(user_id, "ptp", f"{display(p['symbol'])}: parcial {p['ptp_pct']:.0f}% fechada a +{p['ptp_r']:g}R ({part:+.2f} $)"
+                                              + (", stop em break-even" if be_on else ""), p["symbol"])
                 continue
-        if not reason and p.get("stop_dist") and not p.get("be"):
+        if not reason and be_on and p.get("stop_dist") and not p.get("be"):
             one_r = p["entry"] + (1 if long else -1) * p["stop_dist"]
             if (long and px >= one_r) or (not long and px <= one_r):
                 await db.positions.update_one({"position_id": p["position_id"]}, {"$set": {"stop_loss": p["entry"], "be": True}})
+                await _mt_breakeven(p)
                 await bot_log(user_id, "be", f"{display(p['symbol'])}: stop movido para break-even (+1R atingido)", p["symbol"])
         if reason:
             # simulated resting stop/limit order: fill at the order level, not at the (later) polled price
@@ -2441,6 +2451,31 @@ class MtCloseIn(BaseModel):
     position_id: str = Field(min_length=1, max_length=40)
 
 
+@api.get("/live/mt/positions")
+async def mt_positions(request: Request):
+    """Live MetaTrader account snapshot for the MT5 panel: balance/equity/margin + every open position with its profit."""
+    u = await get_user(request)
+    acc = await _mt_acc(u["user_id"])
+    if not acc or not metaapi_exec.configured():
+        raise HTTPException(400, "Liga primeiro uma conta MetaTrader")
+    try:
+        inf, pos = await asyncio.gather(metaapi_exec.info(acc["account_id"], acc["region"]),
+                                        metaapi_exec.positions(acc["account_id"], acc["region"]))
+    except (metaapi_exec.MetaApiError, httpx.HTTPError) as e:
+        raise HTTPException(400, f"MetaTrader: {e}")
+    rows = [{"id": str(p.get("id")), "symbol": p.get("symbol"), "side": "BUY" if p.get("type") == "POSITION_TYPE_BUY" else "SELL",
+             "volume": p.get("volume"), "open_price": p.get("openPrice"), "price": p.get("currentPrice"),
+             "sl": p.get("stopLoss"), "tp": p.get("takeProfit"), "profit": round(float(p.get("profit") or 0), 2),
+             "swap": round(float(p.get("swap") or 0), 2), "commission": round(float(p.get("commission") or 0), 2),
+             "time": p.get("time"), "comment": p.get("comment") or "", "bot": (p.get("comment") or "") == "SmartTrade"}
+            for p in pos]
+    rows.sort(key=lambda r: r["time"] or "", reverse=True)
+    return {"account": {"login": acc.get("login"), "server": acc.get("server"), "currency": inf.get("currency"),
+                        "balance": inf.get("balance"), "equity": inf.get("equity"), "margin": inf.get("margin"),
+                        "free_margin": inf.get("freeMargin"), "margin_level": inf.get("marginLevel"), "type": inf.get("type")},
+            "positions": rows, "total_profit": round(sum(r["profit"] + r["swap"] + r["commission"] for r in rows), 2)}
+
+
 @api.post("/live/mt/test-close")
 async def mt_test_close(body: MtCloseIn, request: Request):
     u = await get_user(request)
@@ -2451,6 +2486,12 @@ async def mt_test_close(body: MtCloseIn, request: Request):
         await metaapi_exec.trade(acc["account_id"], acc["region"], {"actionType": "POSITION_CLOSE_ID", "positionId": body.position_id})
     except (metaapi_exec.MetaApiError, httpx.HTTPError) as e:
         raise HTTPException(400, f"MetaTrader: {e}")
+    # close the bot's mirror position in the app too (without sending a second close to MT)
+    for p in await db.positions.find({"user_id": u["user_id"], "status": "open", "live.exchange": "mt"}, {"_id": 0}).to_list(200):
+        if str(p["live"].get("mt_position")) == body.position_id:
+            q = await quote(p["symbol"])
+            await close_position({**p, "live": None}, q["price"] if q else p["entry"], "manual")
+            await bot_log(u["user_id"], "close", f"{display(p['symbol'])}: fechado à mão no Painel MT5", p["symbol"])
     return {"ok": True}
 
 

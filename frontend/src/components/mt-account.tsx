@@ -86,6 +86,7 @@ export function MtAccount({ maxLots, suffix, onMaxLots, onSuffix }: { maxLots: n
   return (
     <View style={styles.card} testID="bot-mt">
       <Text style={styles.title}>MetaTrader (MT4/MT5)</Text>
+      <Button label="Painel MT5 (posições e lucro ao vivo)" onPress={() => router.push("/mt-panel")} testID="mt-open-panel" />
       <Button label="Robô MT5 (todas as estratégias)" variant="ghost" onPress={() => router.push("/ea-guide")} testID="mt-download-ea" />
       {!s ? null : !s.configured ? (
         <Text style={styles.muted}>Falta o token MetaApi (metaapi.cloud). Adiciona-o para ligar a conta demo.</Text>

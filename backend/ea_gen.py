@@ -126,6 +126,7 @@ def render(bot: dict, plugins: dict, configs: list, user: str, script: bool = Fa
         "__MAXS__": str(int(bot.get("max_positions", 30))), "__MAX12__": str(int(bot.get("c12_max_positions", 30))),
         "__MAX20__": str(int(bot.get("c20_max_positions", 30))),
         "__PTPON__": "true" if bot.get("ptp_enabled", True) else "false", "__PTPPCT__": _f(bot.get("ptp_pct", 50)),
+        "__BEON__": "true" if bot.get("breakeven_enabled", True) else "false",
         "__MAXLOTS__": _f(bot.get("mt_max_lots", 0.1)), "__SUFFIX__": (bot.get("mt_suffix") or "").replace('"', ""),
         "__CONFIG__": "// ---- setups otimizados na app:\n" + table + "\n" + "\n".join(cfg),
         "//__RUNTIME__\n": "//__RUNTIME__\n" if script else "",

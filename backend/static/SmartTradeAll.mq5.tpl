@@ -17,7 +17,8 @@ input bool   EnableC20         = __C20ON__;  // Ativar Sniper 20
 input int    MaxSetupPositions = __MAXS__;   // Máx. posições abertas (setups)
 input int    MaxC12Positions   = __MAX12__;  // Máx. posições abertas (12C)
 input int    MaxC20Positions   = __MAX20__;  // Máx. posições abertas (20C)
-input bool   UsePartial        = __PTPON__;  // TP parcial + break-even
+input bool   UsePartial        = __PTPON__;  // TP parcial
+input bool   UseBreakeven      = __BEON__;   // Stop para a entrada a +1R
 input double PartialPct        = __PTPPCT__; // % a fechar no alvo parcial
 input double MaxLots           = __MAXLOTS__;// Máx. lotes por ordem
 input string SymbolSuffix      = "__SUFFIX__"; // Sufixo dos símbolos na corretora (ex.: .m)
@@ -587,7 +588,7 @@ void ManagePositions() {
          trade.PositionModify(t, open, tp);
          continue;
       }
-      if(moved >= r) trade.PositionModify(t, open, tp);         // +1R → stop para break-even
+      if(UseBreakeven && moved >= r) trade.PositionModify(t, open, tp);         // +1R → stop para break-even
    }
 }
 

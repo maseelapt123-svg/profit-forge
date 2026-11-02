@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 10 tested the MT5 live panel (GET /api/live/mt/positions and /mt-panel), the Tools 'Painel MT5' card, the bot-be break-even switch with PUT /api/bot breakeven_enabled, and check_exits with PTP and BE turned on or off. Backend: 5/5 API tests and 4/4 check_exits unit tests pass. Unit test results: with ptp_enabled and breakeven_enabled both false, the position is left alone at +1.1R and the stop still hits. With only BE on, only the stop moves to entry. Frontend: all requested flows work. /tools -> Painel MT5 -> /mt-panel shows the real Vantage demo account (EUR 203.14, 1 ETHUSD position, -0.04 EUR). It refetches every 5 s (2 requests in 11 s, and the live price changed). The first tap on Close shows 'Confirmar'; I did NOT tap a second time. The back button returns to /tools. The bot-be switch turns BE off, 'Guardar Configuração' saves it, and it is still off after reload. I then restored it to true. user_test1 stayed on live_mode=paper, and no MT orders were placed or closed. No deprecated Expo packages were found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "check_exits (server.py:928-942)", "issue": "With breakeven_enabled=false and ptp_enabled=true, the partial TP still moves the stop to entry (sets stop_loss=entry and be=True). The unit test confirms this. For MT positions, _live_sell also sends POSITION_MODIFY to break-even. The BE switch therefore does not fully disable break-even while PTP is on. This may be intended (the bot-ptp text says so), but it conflicts with a user who wants 'sem break even'."},
+      {"endpoint": "check_exits BE step (server.py:943-947)", "issue": "The standalone break-even step only updates the DB/simulated stop. It does not send POSITION_MODIFY to MetaTrader, so the broker SL in the MT app never moves to BE."},
+      {"endpoint": "_go_mt (server.py:671-704)", "issue": "The MT stop is widened by the spread, but the simulated position keeps the original narrower stop_loss/take_profit and entry. pos is not updated, unlike the Binance path. check_exits uses the data-feed quote, so it closes the MT position (POSITION_CLOSE_ID) when the narrower simulated stop is hit. The spread-widened MT stop is effectively bypassed, and TP closes happen at the paper level, not the MT level."},
+      {"endpoint": "POST /api/live/mt/test-close", "issue": "The panel can close any MT position, including bot-managed ones, but the matching db.positions entry stays open. Later, check_exits sends a close that fails (only logged) and books paper PnL that differs from MT. The bot position should be marked as closed when it is closed from the panel."},
+      {"endpoint": "GET /api/live/mt/positions", "issue": "bot = comment.startswith('S') also tags manual test orders ('ST teste') and any comment starting with 'S' as 'Robô SmartTrade'. Matching 'SmartTrade' exactly would be safer."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "MtPanel close button", "issue": "The 'Confirmar' state never resets. It survives refetches (still 'Confirmar' 6 s later), so a later stray tap closes a real position. Add a timeout of about 3-5 s or reset it on blur.", "testID": "mt-pos-close-{id}", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/mt-panel", "issues": ["The Close button is 88x36, below the 44pt touch-target minimum (minHeight 36).", "Margin level shows '507750%' when margin is tiny; consider capping the display or showing '—' above a threshold."]},
+      {"screen": "/bot", "issues": ["The bot-be switch saves only after 'Guardar Configuração', and there is no unsaved-changes hint. The 12C/20 switches above auto-save, which is inconsistent.", "The bot-ptp description says it moves the stop to break-even even when the Break-even switch is off, which is confusing."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iter10_mt_panel_be.py", "/app/backend/tests/test_iter10_check_exits_unit.py", "/app/test_reports/pytest/iter10.xml"],
+  "action_items": [
+    "Decide whether PTP should move the stop to BE when breakeven_enabled=false. If not, gate the 'stop_loss: entry, be: True' in the PTP branch, and the MT POSITION_MODIFY in _live_sell, on be_on.",
+    "Send POSITION_MODIFY to MT in the standalone BE step for live MT positions.",
+    "In _go_mt, store the MT fill and the widened SL/TP on pos (entry/stop_loss/take_profit, or a live.sl/live.tp that check_exits respects), so the bot does not close the MT position at the narrower paper stop.",
+    "When /live/mt/test-close closes a position linked to a bot db position, mark that db position as closed.",
+    "Auto-reset the MT panel 'Confirmar' state after a few seconds, and raise closeBtn minHeight to 44."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 2578 lines (well over 700); splitting the MT/live execution code into its own module is recommended.",
+    "_live_sell partial MT path: the BE stop uses p['entry'] (paper signal entry), not the MT open price, so it may be rejected by the broker or placed on the wrong side of the spread."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter10_mt_panel_be.py", "/app/backend/tests/test_iter10_check_exits_unit.py"],
+  "success_rate": {"backend": "100% (9/9)", "frontend": "100% of requested flows"},
+  "seed_data_creation": "The unit test creates and deletes positions/bots/bot_logs/accounts for user_id TEST_check_exits_unit. No changes to user_test1 remain; breakeven_enabled was restored to true.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "GET /api/bot returns {bot:{...}}. The bot-be switch needs a normal click (not force) and then bot-save-button to persist. Run pytest with '-n 0' for the unit test, because pytest.ini adds xdist. Never tap mt-pos-close twice: it closes a real Vantage demo position."
+}

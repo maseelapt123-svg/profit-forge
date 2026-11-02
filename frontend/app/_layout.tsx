@@ -42,6 +42,7 @@ function Gate() {
         <Stack.Screen name="ai-stats" />
         <Stack.Screen name="results" />
         <Stack.Screen name="ea-guide" />
+        <Stack.Screen name="mt-panel" />
       </Stack.Protected>
       <Stack.Protected guard={!user}>
         <Stack.Screen name="login" />

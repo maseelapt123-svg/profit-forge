@@ -15,6 +15,7 @@ const TOOLS = [
   { route: "/patterns", icon: "scan", title: "Scanner de Padrões", desc: "Engolfo, martelo, doji, pin bar e inside bar em todos os ativos" },
   { route: "/calculator", icon: "calculator", title: "Calculadora de Posição", desc: "Quanto comprar consoante o capital, risco e stop" },
   { route: "/plugins", icon: "extension-puzzle", title: "Plugins de Estratégia", desc: "Ativa e ajusta SMC, RSI, EMA, MACD e Bollinger" },
+  { route: "/mt-panel", icon: "pulse", title: "Painel MT5", desc: "Posições abertas e lucro em tempo real da conta MetaTrader" },
   { route: "/ea-guide", icon: "logo-windows", title: "Robô para MetaTrader 5", desc: "Descarrega o EA e instala no MT5 em 4 passos (.mq5 → .ex5)" },
   { route: "/bot", icon: "hardware-chip", title: "Robô Automático", desc: "Opera sozinho em vários timeframes otimizados" },
   { route: "/hfx-optimizer", icon: "trophy", title: "Estratégia Vencedora HFX", desc: "Encontra e valida a melhor combinação de plugins por par" },

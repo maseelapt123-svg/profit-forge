@@ -23,7 +23,7 @@ type Bot = { setups?: Setup[]; mtf: boolean; ai_filter: boolean; conf_votes: num
   c20_enabled: boolean; c20_min: number; c20_max_positions: number; c20_tf: string; c20_rr: number; c20_ptp_r: number;
   c20_pairs?: { symbol: string; tf: string; rr: number; min: number; enabled: boolean; test: number | null }[];
   c12_pairs?: { symbol: string; tf: string; rr: number; min: number; enabled: boolean; test: number | null }[];
-  ptp_enabled: boolean; ptp_pct: number; ptp_r: number; live_mode: "paper" | "binance" | "metatrader"; live_max_usd: number; live_until?: string;
+  ptp_enabled: boolean; breakeven_enabled?: boolean; ptp_pct: number; ptp_r: number; live_mode: "paper" | "binance" | "metatrader"; live_max_usd: number; live_until?: string;
   mt_max_lots: number; mt_suffix: string; trend_filter: boolean; enabled: boolean; symbols: string[]; tf: string; strategy: string; risk_pct: number; sl_atr: number; rr: number; max_positions: number; last_run?: string };
 type Resp = {
   bot: Bot; logs: { log_id: string; kind: string; msg: string; created_at: string }[];
@@ -265,11 +265,26 @@ export default function BotScreen() {
               onMax={(v) => upd({ live_max_usd: v })}
             />
           )}
+          <View style={styles.c12Card} testID="bot-be">
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.c12Title}>Break-even automático</Text>
+                <Text style={styles.note}>Ao chegar a +1R, mete o stop no preço de entrada.</Text>
+              </View>
+              <Switch
+                testID="bot-be-switch"
+                value={cfg.breakeven_enabled ?? true}
+                onValueChange={(v) => upd({ breakeven_enabled: v })}
+                trackColor={{ true: colors.success, false: colors.surfaceTertiary }}
+                thumbColor={colors.onBrandPrimary}
+              />
+            </View>
+          </View>
           <View style={styles.c12Card} testID="bot-ptp">
             <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.c12Title}>Take profit parcial</Text>
-                <Text style={styles.note}>Fecha parte da posição no primeiro alvo, mete o stop em break-even e deixa o resto correr até ao alvo final.</Text>
+                <Text style={styles.note}>Fecha parte da posição no primeiro alvo e deixa o resto correr até ao alvo final (com o break-even ligado, o stop passa também para a entrada).</Text>
               </View>
               <Switch
                 testID="bot-ptp-switch"
