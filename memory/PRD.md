@@ -92,3 +92,4 @@ Follow-ups: "Faz trades automaticamente", "Está com resultados negativos", "Bai
 - Bot of user_ae22099ebd57 (sertgio) switched to live_mode=metatrader until 2026-11-08 (auto back to paper via live_until). MT sizing now uses real MT equity + broker tick value; symbols checked against broker list (XAUUSD skipped when min lot > 2x risk). MT account moved from user_test1 to that user.
 - FIX: MT orders skipped when broker spread > 30% of stop distance (ADAUSD spread 3.4% caused INVALID_STOPS).
 - Bot BE switch (breakeven_enabled) + ptp respect at exit time; MT BE mirrored; _go_mt widens stop by spread+stopsLevel, min lot always, app position synced to broker values; /live/mt/positions + /mt-panel screen; panel close also closes app mirror. User bot: ptp & BE off.
+- 12C/20C pairs only enabled when test return > 5% (MIN_C_RETURN); applied to user's existing pairs.

@@ -41,7 +41,7 @@ export function C20Optimize({ pairs, onDone, kind = "c20" }: { pairs: Pair[]; on
     <View style={styles.card} testID={`${kind}-optimize`}>
       <Text style={styles.title}>Otimizar pares {kind === "c20" ? "Sniper 20" : "12 Confirmações"}</Text>
       <Text style={styles.muted}>
-        Para cada par testa 5m, 15m, 1H, 4H e 1D, {kind === "c20" ? "R:R 1:5 e 1:10 e 14/16/18 ferramentas" : "R:R 1:1,5, 1:2 e 1:3 e 9/10/11 confirmações"} (treino 70% / teste 30%). Guarda logo o melhor de cada par; pares sem resultado positivo no teste ficam desligados.
+        Para cada par testa 5m, 15m, 1H, 4H e 1D, {kind === "c20" ? "R:R 1:5 e 1:10 e 14/16/18 ferramentas" : "R:R 1:1,5, 1:2 e 1:3 e 9/10/11 confirmações"} (treino 70% / teste 30%). Guarda logo o melhor de cada par; pares com lucro no teste até 5% ficam desligados (só entram no robô acima de 5%).
       </Text>
       {running && j && (
         <View style={{ gap: 4 }}>

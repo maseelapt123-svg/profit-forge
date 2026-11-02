@@ -1389,7 +1389,7 @@ async def _c20_optimize(job_id: str):
                     continue
                 if b and (best is None or b["test"] > best["test"]):
                     best = {**b, "tf": tf}
-            pair = {"symbol": sym, "display": display(sym), "enabled": bool(best and best["test"] > 0), **(best or {"tf": bot.get(f"{kind}_tf", "1h"), "rr": bot.get(f"{kind}_rr") or bot["rr"], "min": bot.get(f"{kind}_min", 16), "test": None})}
+            pair = {"symbol": sym, "display": display(sym), "enabled": bool(best and best["test"] > MIN_C_RETURN), **(best or {"tf": bot.get(f"{kind}_tf", "1h"), "rr": bot.get(f"{kind}_rr") or bot["rr"], "min": bot.get(f"{kind}_min", 16), "test": None})}
             job["results"].append(pair)
             # save immediately so nothing is lost if the app/server sleeps
             await db.bots.update_one({"user_id": uid}, {"$pull": {f"{kind}_pairs": {"symbol": sym}}})
@@ -1397,7 +1397,7 @@ async def _c20_optimize(job_id: str):
     finally:
         job["status"], job["current"] = "done", None
         on = sum(1 for p in job["results"] if p["enabled"])
-        await bot_log(uid, "fix", f"{'Sniper 20' if kind == 'c20' else '12 Confirmações'} otimizado: {on}/{len(job['results'])} pares ativos com o melhor TF e R:R")
+        await bot_log(uid, "fix", f"{'Sniper 20' if kind == 'c20' else '12 Confirmações'} otimizado: {on}/{len(job['results'])} pares ativos (lucro no teste > {MIN_C_RETURN:g}%)")
 
 
 @api.post("/bot/c20-optimize")
@@ -1462,7 +1462,7 @@ async def _negopt(job_id: str, items: List[SimItem]):
                         b = await asyncio.to_thread(_c20_grid, df, await get_htf(it.symbol, tf), fee, bot)
                         if b and (best is None or b["test"] > best["test"]):
                             best = {**b, "tf": tf}
-                    if best and best["test"] > 0:
+                    if best and best["test"] > MIN_C_RETURN:
                         prop["best"] = {"tf": best["tf"], "rr": best["rr"], "min": best["min"], "test": best["test"], "winrate": best["test_winrate"]}
             except HTTPException:
                 pass
@@ -1533,6 +1533,7 @@ async def negopt_apply(job_id: str, request: Request):
 
 _bot_opt_jobs: Dict[str, dict] = {}
 MIN_BOT_RETURN = 6.0  # only setups with > 6% profit in the out-of-sample test period may go to the bot
+MIN_C_RETURN = 5.0  # 12C / Sniper 20 pairs only go to the bot with > 5% profit in the test period
 
 
 async def _save_job(job: dict) -> None:
