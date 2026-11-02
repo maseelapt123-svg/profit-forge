@@ -859,7 +859,7 @@ BOT_DEFAULT = {"enabled": False, "symbols": ["BTC-USD", "ETH-USD", "EURUSD=X"], 
                "risk_pct": 1.0, "sl_atr": 1.5, "rr": 2.0, "max_positions": 30, "ai_filter": False,
                "conf_votes": 2, "conf_score": 55.0, "c12_enabled": False, "c12_min": 10, "c12_max_positions": 30, "c12_tf": "1h",
                "c20_enabled": False, "c20_min": 16, "c20_max_positions": 30, "c20_tf": "1h", "c20_rr": 5.0, "c20_ptp_r": 2.0,
-               "ptp_enabled": True, "breakeven_enabled": True, "ptp_pct": 50.0, "ptp_r": 1.0, "c20_pairs": [], "c12_pairs": [], "live_mode": "paper", "live_max_usd": 50.0,
+               "ptp_enabled": True, "breakeven_enabled": True, "ptp_pct": 50.0, "ptp_r": 1.0, "c20_pairs": [], "c12_pairs": [], "c_min_return": 5.0, "weekly_reopt": True, "live_mode": "paper", "live_max_usd": 50.0,
                "mt_max_lots": 0.1, "mt_suffix": ""}
 
 
@@ -899,6 +899,8 @@ class BotIn(BaseModel):
     c20_ptp_r: float = Field(2.0, ge=0.5, le=5)
     c20_pairs: List[Dict[str, Any]] = []
     c12_pairs: List[Dict[str, Any]] = []
+    c_min_return: float = Field(5.0, ge=0, le=50)
+    weekly_reopt: bool = True
     live_mode: str = Field("paper", pattern="^(paper|binance|metatrader)$")
     live_max_usd: float = Field(50, ge=5, le=100000)
     mt_max_lots: float = Field(0.1, ge=0.01, le=50)
@@ -1389,7 +1391,7 @@ async def _c20_optimize(job_id: str):
                     continue
                 if b and (best is None or b["test"] > best["test"]):
                     best = {**b, "tf": tf}
-            pair = {"symbol": sym, "display": display(sym), "enabled": bool(best and best["test"] > MIN_C_RETURN), **(best or {"tf": bot.get(f"{kind}_tf", "1h"), "rr": bot.get(f"{kind}_rr") or bot["rr"], "min": bot.get(f"{kind}_min", 16), "test": None})}
+            pair = {"symbol": sym, "display": display(sym), "enabled": bool(best and best["test"] > float(bot.get("c_min_return", MIN_C_RETURN))), **(best or {"tf": bot.get(f"{kind}_tf", "1h"), "rr": bot.get(f"{kind}_rr") or bot["rr"], "min": bot.get(f"{kind}_min", 16), "test": None})}
             job["results"].append(pair)
             # save immediately so nothing is lost if the app/server sleeps
             await db.bots.update_one({"user_id": uid}, {"$pull": {f"{kind}_pairs": {"symbol": sym}}})
@@ -1397,7 +1399,39 @@ async def _c20_optimize(job_id: str):
     finally:
         job["status"], job["current"] = "done", None
         on = sum(1 for p in job["results"] if p["enabled"])
-        await bot_log(uid, "fix", f"{'Sniper 20' if kind == 'c20' else '12 Confirmações'} otimizado: {on}/{len(job['results'])} pares ativos (lucro no teste > {MIN_C_RETURN:g}%)")
+        await bot_log(uid, "fix", f"{'Sniper 20' if kind == 'c20' else '12 Confirmações'} otimizado: {on}/{len(job['results'])} pares ativos (lucro no teste > {float(bot.get('c_min_return', MIN_C_RETURN)):g}%)")
+
+
+def _new_c_job(uid: str, kind: str, bot: dict) -> Optional[str]:
+    syms = [s for s in bot["symbols"] if s in ASSET_INFO]
+    if not syms or any(v["user_id"] == uid and v["status"] == "running" and v.get("kind") == kind for v in _c20_jobs.values()):
+        return None
+    job_id = uuid.uuid4().hex[:12]
+    _c20_jobs[job_id] = {"job_id": job_id, "user_id": uid, "kind": kind, "status": "running", "current": None, "step": 0,
+                         "total": len(syms) * len(C20_OPT_TFS), "symbols": syms, "results": []}
+    return job_id
+
+
+async def _weekly_reopt(uid: str, bot: dict):
+    """Sunday re-optimisation of the 12C and Sniper 20 pairs (one after the other, to keep the server light)."""
+    await bot_log(uid, "fix", "Reotimização semanal de domingo: a recalcular os pares 12C e Sniper 20…")
+    for kind in ("c12", "c20"):
+        if not (bot.get(f"{kind}_enabled") or bot.get(f"{kind}_pairs")):
+            continue
+        job_id = _new_c_job(uid, kind, bot)
+        if job_id:
+            await _c20_optimize(job_id)
+
+
+async def maybe_weekly_reopt(bots: list):
+    now = datetime.now(timezone.utc)
+    if now.weekday() != 6 or now.hour < 2:  # Sundays from 02:00 UTC (markets closed / quiet)
+        return
+    today = now.date().isoformat()
+    for b in bots:
+        if b.get("weekly_reopt", True) and b.get("last_reopt") != today:
+            await db.bots.update_one({"user_id": b["user_id"]}, {"$set": {"last_reopt": today}})
+            asyncio.create_task(_weekly_reopt(b["user_id"], {**BOT_DEFAULT, **b}))
 
 
 @api.post("/bot/c20-optimize")
@@ -1406,14 +1440,11 @@ async def c20_optimize(request: Request, kind: str = "c20"):
     if kind not in ("c12", "c20"):
         raise HTTPException(400, "Tipo inválido")
     bot = await get_bot(u["user_id"])
-    syms = [s for s in bot["symbols"] if s in ASSET_INFO]
-    if not syms:
+    if not [s for s in bot["symbols"] if s in ASSET_INFO]:
         raise HTTPException(400, "Adiciona ativos ao robô primeiro")
-    if any(v["user_id"] == u["user_id"] and v["status"] == "running" and v.get("kind") == kind for v in _c20_jobs.values()):
+    job_id = _new_c_job(u["user_id"], kind, bot)
+    if not job_id:
         raise HTTPException(429, f"Já tens uma otimização {'Sniper 20' if kind == 'c20' else '12 Confirmações'} em curso")
-    job_id = uuid.uuid4().hex[:12]
-    _c20_jobs[job_id] = {"job_id": job_id, "user_id": u["user_id"], "kind": kind, "status": "running", "current": None, "step": 0,
-                         "total": len(syms) * len(C20_OPT_TFS), "symbols": syms, "results": []}
     asyncio.create_task(_c20_optimize(job_id))
     return {"job_id": job_id}
 
@@ -1462,7 +1493,7 @@ async def _negopt(job_id: str, items: List[SimItem]):
                         b = await asyncio.to_thread(_c20_grid, df, await get_htf(it.symbol, tf), fee, bot)
                         if b and (best is None or b["test"] > best["test"]):
                             best = {**b, "tf": tf}
-                    if best and best["test"] > MIN_C_RETURN:
+                    if best and best["test"] > float(bot.get("c_min_return", MIN_C_RETURN)):
                         prop["best"] = {"tf": best["tf"], "rr": best["rr"], "min": best["min"], "test": best["test"], "winrate": best["test_winrate"]}
             except HTTPException:
                 pass
@@ -1792,6 +1823,7 @@ async def bot_loop():
                 except Exception:
                     logger.exception("bot cycle failed for %s", b.get("user_id"))
             bot_users = {b["user_id"] for b in bots}
+            await maybe_weekly_reopt(await db.bots.find({}, {"_id": 0}).to_list(500))
             for uid in await db.positions.distinct("user_id", {"status": "open"}):
                 if uid not in bot_users:
                     await check_exits(uid)
@@ -1841,6 +1873,10 @@ async def bot_put(body: BotIn, request: Request):
         data["live_until"] = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()  # 1-week demo run, then back to paper
     elif data.get("live_mode") != "metatrader":
         unset["live_until"] = ""
+    thr = float(data.get("c_min_return", MIN_C_RETURN))
+    if thr != float(prev.get("c_min_return", MIN_C_RETURN)):  # new minimum profit -> re-filter the optimised pairs
+        for k in ("c12_pairs", "c20_pairs"):
+            data[k] = [{**p, "enabled": p.get("test") is not None and p["test"] > thr} for p in data.get(k) or []]
     await db.bots.update_one({"user_id": u["user_id"]}, {"$set": {**data, "updated_at": datetime.now(timezone.utc).isoformat()}, "$unset": unset}, upsert=True)
     if body.enabled != prev["enabled"]:
         await bot_log(u["user_id"], "status", "Robô ativado" if body.enabled else "Robô parado")

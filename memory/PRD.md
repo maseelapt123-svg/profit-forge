@@ -93,3 +93,4 @@ Follow-ups: "Faz trades automaticamente", "Está com resultados negativos", "Bai
 - FIX: MT orders skipped when broker spread > 30% of stop distance (ADAUSD spread 3.4% caused INVALID_STOPS).
 - Bot BE switch (breakeven_enabled) + ptp respect at exit time; MT BE mirrored; _go_mt widens stop by spread+stopsLevel, min lot always, app position synced to broker values; /live/mt/positions + /mt-panel screen; panel close also closes app mirror. User bot: ptp & BE off.
 - 12C/20C pairs only enabled when test return > 5% (MIN_C_RETURN); applied to user's existing pairs.
+- Bot: c_min_return (5/8/10%, refilters 12C/20C pairs on change) + weekly_reopt (Sundays >=02:00 UTC, last_reopt guard, c12 then c20 via _new_c_job/_c20_optimize).

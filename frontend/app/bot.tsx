@@ -23,7 +23,7 @@ type Bot = { setups?: Setup[]; mtf: boolean; ai_filter: boolean; conf_votes: num
   c20_enabled: boolean; c20_min: number; c20_max_positions: number; c20_tf: string; c20_rr: number; c20_ptp_r: number;
   c20_pairs?: { symbol: string; tf: string; rr: number; min: number; enabled: boolean; test: number | null }[];
   c12_pairs?: { symbol: string; tf: string; rr: number; min: number; enabled: boolean; test: number | null }[];
-  ptp_enabled: boolean; breakeven_enabled?: boolean; ptp_pct: number; ptp_r: number; live_mode: "paper" | "binance" | "metatrader"; live_max_usd: number; live_until?: string;
+  ptp_enabled: boolean; breakeven_enabled?: boolean; ptp_pct: number; ptp_r: number; live_mode: "paper" | "binance" | "metatrader"; live_max_usd: number; live_until?: string; c_min_return?: number; weekly_reopt?: boolean; last_reopt?: string;
   mt_max_lots: number; mt_suffix: string; trend_filter: boolean; enabled: boolean; symbols: string[]; tf: string; strategy: string; risk_pct: number; sl_atr: number; rr: number; max_positions: number; last_run?: string };
 type Resp = {
   bot: Bot; logs: { log_id: string; kind: string; msg: string; created_at: string }[];
@@ -235,6 +235,30 @@ export default function BotScreen() {
               />
             </>
           )}
+          <View style={styles.c12Card} testID="bot-copt">
+            <Text style={styles.c12Title}>Pares 12C e Sniper 20 · lucro mínimo</Text>
+            <Text style={styles.note}>Um par só entra no robô se tiver mais do que este lucro no período de teste da otimização. Ao mudar, os pares já otimizados são refiltrados (grava com «Guardar»).</Text>
+            <ChipRow
+              options={[{ value: "5", label: "> 5%" }, { value: "8", label: "> 8%" }, { value: "10", label: "> 10%" }]}
+              value={String(cfg.c_min_return ?? 5)}
+              onChange={(v) => upd({ c_min_return: Number(v) })}
+              testID="bot-c-min-return"
+            />
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginTop: 8 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.c12Title}>Reotimizar todos os domingos</Text>
+                <Text style={styles.note}>Ao domingo (a partir das 02:00 UTC) o robô volta a otimizar sozinho os pares 12C e Sniper 20 com os dados mais recentes.</Text>
+              </View>
+              <Switch
+                testID="bot-weekly-reopt"
+                value={cfg.weekly_reopt ?? true}
+                onValueChange={(v) => upd({ weekly_reopt: v })}
+                trackColor={{ true: colors.success, false: colors.surfaceTertiary }}
+                thumbColor={colors.onBrandPrimary}
+              />
+            </View>
+            {!!cfg.last_reopt && <Text style={styles.note}>Última reotimização: {new Date(cfg.last_reopt).toLocaleDateString("pt-PT")}</Text>}
+          </View>
           <Text style={[styles.note, { paddingHorizontal: 16, marginTop: 8, marginBottom: 4 }]}>Onde o robô executa as ordens</Text>
           <ChipRow
             options={[{ value: "paper", label: "Simulada" }, { value: "metatrader", label: "MetaTrader" }, { value: "binance", label: "Binance" }]}
