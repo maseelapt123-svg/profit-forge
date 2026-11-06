@@ -235,10 +235,10 @@ export default function BotScreen() {
           )}
           <View style={styles.c12Card} testID="bot-copt">
             <Text style={styles.c12Title}>Critério para entrar no robô</Text>
-            <Text style={styles.note}>Um setup ou par só entra se, no período de teste, tiver lucro acima do mínimo OU acerto acima de 55% com lucro mínimo de 6%. Entre os aprovados fica o mais lucrativo com menor drawdown. Ao mudar, os pares 12C/20C são refiltrados (grava com «Guardar»).</Text>
+            <Text style={styles.note}>Um setup ou par só entra se, no período de teste, tiver acerto acima de 55% com lucro acima do mínimo (6% nos setups; o que escolheres abaixo nos pares 12C/20C) OU lucro acima de 25% mesmo com acerto menor. Entre os aprovados fica o mais lucrativo com menor drawdown. Ao mudar, os pares 12C/20C são refiltrados (grava com «Guardar»).</Text>
             <ChipRow
-              options={[{ value: "5", label: "> 5%" }, { value: "8", label: "> 8%" }, { value: "10", label: "> 10%" }]}
-              value={String(cfg.c_min_return ?? 10)}
+              options={[{ value: "6", label: "≥ 6%" }, { value: "8", label: "≥ 8%" }, { value: "10", label: "≥ 10%" }]}
+              value={String(cfg.c_min_return ?? 6)}
               onChange={(v) => upd({ c_min_return: Number(v) })}
               testID="bot-c-min-return"
             />

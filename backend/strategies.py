@@ -667,13 +667,13 @@ def optimize(df, plugins, fee, risk_pct=1.0, capital=10000.0, split=0.7, htf=Non
     return {"best": best, "candidates": (validated or top)[:8], "tested": len(results)}
 
 
-MIN_RETURN = 10.0   # every optimiser accepts a setup with > 10% test profit OR > 55% test win rate (with >= 6% profit)
-MIN_WINRATE = 55.0
-MIN_WR_RETURN = 6.0  # a > 55% win-rate setup still needs at least 6% test profit
+MIN_WINRATE = 55.0   # every optimiser: test win rate > 55% with at least MIN_WR_RETURN profit ...
+MIN_WR_RETURN = 6.0
+MIN_RETURN = 25.0    # ... OR a very profitable setup (> 25% test profit) even below 55% win rate
 
 
-def qualifies(ret: float, wr: float, thr: float = MIN_RETURN) -> bool:
-    return ret > thr or (wr > MIN_WINRATE and ret >= MIN_WR_RETURN)
+def qualifies(ret: float, wr: float, min_ret: float = MIN_WR_RETURN) -> bool:
+    return ret > MIN_RETURN or (wr > MIN_WINRATE and ret >= min_ret)
 
 
 def simulate(df, sig, sl_atr=1.5, rr=2.0, risk_pct=1.0, capital=10000.0, fee=0.0005, breakeven=True,

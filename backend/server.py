@@ -930,7 +930,7 @@ BOT_DEFAULT = {"enabled": False, "symbols": ["BTC-USD", "ETH-USD", "EURUSD=X"], 
                "risk_pct": 1.0, "sl_atr": 1.5, "rr": 2.0, "max_positions": 30, "ai_filter": False,
                "conf_votes": 2, "conf_score": 55.0, "c12_enabled": False, "c12_min": 10, "c12_max_positions": 30, "c12_tf": "1h",
                "c20_enabled": False, "c20_min": 16, "c20_max_positions": 30, "c20_tf": "1h", "c20_rr": 5.0, "c20_ptp_r": 2.0,
-               "ptp_enabled": True, "breakeven_enabled": True, "ptp_pct": 50.0, "ptp_r": 1.0, "c20_pairs": [], "c12_pairs": [], "c_min_return": 10.0, "weekly_reopt": True, "live_mode": "paper", "live_max_usd": 50.0,
+               "ptp_enabled": True, "breakeven_enabled": True, "ptp_pct": 50.0, "ptp_r": 1.0, "c20_pairs": [], "c12_pairs": [], "c_min_return": 6.0, "weekly_reopt": True, "live_mode": "paper", "live_max_usd": 50.0,
                "mt_max_lots": 0.1, "mt_suffix": ""}
 
 
@@ -972,7 +972,7 @@ class BotIn(BaseModel):
     c20_ptp_r: float = Field(2.0, ge=0.5, le=5)
     c20_pairs: List[Dict[str, Any]] = []
     c12_pairs: List[Dict[str, Any]] = []
-    c_min_return: float = Field(10.0, ge=0, le=50)
+    c_min_return: float = Field(6.0, ge=0, le=50)
     weekly_reopt: bool = True
     live_mode: str = Field("paper", pattern="^(paper|binance|metatrader)$")
     live_max_usd: float = Field(50, ge=5, le=100000)
@@ -1476,7 +1476,7 @@ async def _c20_optimize(job_id: str):
     finally:
         job["status"], job["current"] = "done", None
         on = sum(1 for p in job["results"] if p["enabled"])
-        await bot_log(uid, "fix", f"{'Sniper 20' if kind == 'c20' else '12 Confirmações'} otimizado: {on}/{len(job['results'])} pares ativos (teste: lucro > {float(bot.get('c_min_return', MIN_C_RETURN)):g}% ou acerto > {MIN_WINRATE:g}% com lucro ≥ {MIN_WR_RETURN:g}%)")
+        await bot_log(uid, "fix", f"{'Sniper 20' if kind == 'c20' else '12 Confirmações'} otimizado: {on}/{len(job['results'])} pares ativos (teste: acerto > {MIN_WINRATE:g}% com lucro ≥ {float(bot.get('c_min_return', MIN_C_RETURN)):g}% ou lucro > {MIN_RETURN:g}%)")
 
 
 def _new_c_job(uid: str, kind: str, bot: dict) -> Optional[str]:
@@ -1640,9 +1640,8 @@ async def negopt_apply(job_id: str, request: Request):
 
 
 _bot_opt_jobs: Dict[str, dict] = {}
-MIN_BOT_RETURN = MIN_RETURN  # > 10% test profit, OR > 55% win rate with >= 6% test profit
 _qualifies = qualifies
-MIN_C_RETURN = MIN_RETURN  # same rule for 12C / Sniper 20 pairs
+MIN_C_RETURN = MIN_WR_RETURN  # 12C / Sniper 20: c_min_return is the minimum profit of the > 55% win-rate path
 
 
 async def _save_job(job: dict) -> None:

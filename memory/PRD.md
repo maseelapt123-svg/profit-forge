@@ -100,8 +100,9 @@ Follow-ups: "Faz trades automaticamente", "Está com resultados negativos", "Bai
 - Entry rule: _qualifies(test ret>10 OR wr>60, ret>0); optimize() ranks by profit/drawdown; c20 grid by train ret/(1+dd); c_min_return default 10. mt_reconcile closes orphan SmartTrade MT positions (all users of the account). MT optimizer re-run 2026-11-04: 118 setups, 6 12C, 9 20C.
 
 ## Update (Jun 2026)
-- Unified acceptance rule for ALL optimizers (single, all TFs, Otimizar tudo, negatives, 12C/Sniper 20, MetaTrader): test profit > 10% OR (win rate > 55% AND profit >= 6%); ranked by (train+test return)/(1+max DD). `strategies.qualifies`.
+- Unified acceptance rule for ALL optimizers (single, all TFs, Otimizar tudo, negatives, 12C/Sniper 20, MetaTrader): test win rate > 55% with profit >= 6% (12C/20C: >= c_min_return, default 6) OR test profit > 25%; ranked by (train+test return)/(1+max DD). `strategies.qualifies`.
 - Setups now store test/wr; bot loop skips stored setups failing the rule. One-off cleanup kept 162 / dropped 14 (backend/tests/refilter_setups.py).
 - Removed all position limits (main bot, 12C, 20C, 2-per-candle cap).
 - MetaTrader: entry skipped if real risk (lot x stop) > 1.5% of MT equity (MT_MAX_RISK_PCT).
 - Tested: iteration_12.
+- Rule changed again (Jun 2026): win rate > 55% always (+>=6% profit), or > 25% profit with any win rate. Cleanup: 55 setups kept, 34 dropped, 12 pairs disabled.

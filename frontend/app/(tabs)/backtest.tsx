@@ -224,7 +224,7 @@ export default function Backtest() {
                       </Text>
                     </>
                   ) : (
-                    <Text style={styles.cardLabel}>{row.error ?? "Nenhum setup com lucro > 10% ou acerto > 55% com lucro ≥ 6% — não operar"}</Text>
+                    <Text style={styles.cardLabel}>{row.error ?? "Nenhum setup com acerto > 55% com lucro ≥ 6% ou lucro > 25% — não operar"}</Text>
                   )}
                 </View>
                 {row.best && (
@@ -237,7 +237,7 @@ export default function Backtest() {
             {optData?.status === "done" &&
               (validRows.length ? (
                 <View style={{ gap: 8 }}>
-                  <Text style={styles.cardLabel}>Só setups com lucro acima de 10% OU acerto acima de 55% com lucro mínimo de 6% no teste (ordenados por lucro/drawdown) podem ir para o robô. Marca os que queres usar.</Text>
+                  <Text style={styles.cardLabel}>Só setups com acerto acima de 55% com lucro mínimo de 6% OU lucro acima de 25% no teste (ordenados por lucro/drawdown) podem ir para o robô. Marca os que queres usar.</Text>
                   <View style={{ flexDirection: "row", gap: 8 }}>
                     <Button
                       label={picked.length === validRows.length ? "Limpar" : "Marcar todos"}
@@ -257,7 +257,7 @@ export default function Backtest() {
                 </View>
               ) : (
                 <Text style={styles.note} testID="opt-none">
-                  Nenhum timeframe teve lucro acima de 10% ou acerto acima de 55% com lucro mínimo de 6% no teste para este ativo. Não operes este ativo com estas estratégias.
+                  Nenhum timeframe teve acerto acima de 55% com lucro mínimo de 6% ou lucro acima de 25% no teste para este ativo. Não operes este ativo com estas estratégias.
                 </Text>
               ))}
           </Animated.View>

@@ -51,7 +51,7 @@ export function NegOptimize({ items, onApplied }: { items: Item[]; onApplied: ()
     <View style={styles.card} testID="sim-negopt">
       <Text style={styles.title}>Otimizar os negativos</Text>
       <Text style={styles.muted}>
-        Procura a melhor estratégia (setups) ou o melhor TF/R:R (Sniper 20) para cada um dos {items.length} negativos. Só são propostos setups com lucro acima de 10% ou acerto acima de 55% com lucro mínimo de 6% no teste (o mais lucrativo com menor drawdown); os outros são retirados.
+        Procura a melhor estratégia (setups) ou o melhor TF/R:R (Sniper 20) para cada um dos {items.length} negativos. Só são propostos setups com acerto acima de 55% com lucro mínimo de 6% ou lucro acima de 25% no teste (o mais lucrativo com menor drawdown); os outros são retirados.
       </Text>
       {running && j && <Text style={styles.muted} testID="sim-negopt-progress">{j.current ?? "…"} · {j.step}/{j.total}</Text>}
       {j?.results.map((r, i) => (
