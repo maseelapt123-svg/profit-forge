@@ -1,0 +1,38 @@
+{
+  "summary": "Tested the new rule (>10% profit OR >55% win rate with >=6% profit) across all optimisers, the removed position caps, the MT 1.5% real-risk guard and the bot/backtest UI. Backend: 31/31 pytest pass (26 unit: qualifies edge cases, optimize ranking/best=None, _c20_grid c12/c20 keys, _c_rank incl. None, no caps via source inspection, _go_mt risk guard with MetaApi fully mocked; 5 live API: /api/optimize, /api/optimize/all + status, /api/bot/c20-optimize?kind=c12 + status, PUT/GET /api/bot round-trip). Frontend: /bot has no bot-max/bot-c12-max/bot-c20-max and no 'Máx. posições'; the criteria note mentions 55%/6%. The Backtest optimizer ran end-to-end for BTC/USD (8 TF rows) and all texts mention 10%/55%/6%. No real MT orders were sent.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "_c20_optimize (server.py:1477)", "issue": "The log message after a 12C/Sniper 20 optimisation says 'lucro > X% ou acerto > 55%' and leaves out 'com lucro ≥ 6%'. The text does not match the rule."},
+      {"endpoint": "BotIn / BOT_DEFAULT / ADJ_SPEC (server.py:930-967, 2307)", "issue": "max_positions, c12_max_positions and c20_max_positions are dead fields now. ADJ_SPEC still lets the AI adjuster suggest max_positions (1-10), which no longer does anything."},
+      {"endpoint": "bot setups (stale)", "issue": "Setups added under the old rule (>60% win rate with any profit) are not re-checked. The test user still has BTC 4H +3.76%, 2M +4.21%, 1M +4.04% and 15M +5.77% active in bot.setups. They fail the new >=6% rule, and the /bot 'Otimizar tudo' card (last stored job) still says they were added. Re-filter bot.setups or re-check the rule at entry time."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Backtest optimizer rows", "issues": ["Rows show train/test return and trades but no test win rate, so the user cannot see why a <10% setup (e.g. 15M +8.85%) qualified. Add 'acerto X%' as the /bot screen does."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iter19_rule55_nocap_mtrisk.py", "/app/test_reports/pytest/iter12_api.xml"],
+  "action_items": [
+    "Update the c12/c20 optimise log text (server.py:1477) to include 'com lucro ≥ 6%'.",
+    "Re-filter or remove existing bot.setups that fail the new rule (or check the rule when the bot runs); the stale <6% setups are still live in the bot.",
+    "Optional: remove the unused max_positions fields from BotIn, BOT_DEFAULT, ADJ_SPEC and the bot.tsx type.",
+    "Optional: show test win rate in the Backtest optimizer rows."
+  ],
+  "critical_code_review_comments": [
+    "strategies.qualifies, optimize ranking (qualified, score) and best=None-unless-qualified are correct.",
+    "_c20_grid qualified also requires train return > 0, which is stricter than qualifies alone and seems intended.",
+    "_go_mt: when vol is forced up to vmin, real risk is checked against 1.5%, and a risk_pct above 1.5 without a lot cap is also skipped (verified).",
+    "server.py is 2848 lines and should be split into modules."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter19_rule55_nocap_mtrisk.py"],
+  "success_rate": {"backend": "100% (31/31)", "frontend": "100%"},
+  "seed_data_creation": "None. The c12 optimise and the optimize/all endpoints ran for user_test1, which rewrote user_test1's c12_pairs (by design of the endpoint). The PUT /api/bot rr change was restored to the original value. The TEST_user_iter19_mtrisk bot_logs were cleaned up.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: cd /app/backend; set -a; . .env; . ../frontend/.env; set +a; pytest -n 0 tests/test_iter19_rule55_nocap_mtrisk.py -v (pytest.ini adds xdist args, so use -n 0). The unit tests take about 8s; the API tests about 3-4 min. Never call /api/bot/mt-optimize or real MT trades (live Vantage demo account)."
+}

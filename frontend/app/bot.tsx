@@ -170,7 +170,7 @@ export default function BotScreen() {
             <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.c12Title}>12 Confirmações · entradas extra</Text>
-                <Text style={styles.note}>Corre à parte da estratégia principal, com limite de posições próprio. Só entra quando o mínimo de confirmações concorda.</Text>
+                <Text style={styles.note}>Corre à parte da estratégia principal, sem limite de posições. Só entra quando o mínimo de confirmações concorda.</Text>
               </View>
               <Switch
                 testID="bot-c12-switch"
@@ -187,7 +187,6 @@ export default function BotScreen() {
               <ChipRow options={TFS.filter((t) => !["1m", "2m", "3m"].includes(t.value))} value={cfg.c12_tf} onChange={(v) => upd({ c12_tf: v })} testID="bot-c12-tf" />
               <View style={styles.steps}>
                 <Step label="Mín. confirmações" value={cfg.c12_min} step={1} min={6} max={12} onChange={(v) => upd({ c12_min: v })} testID="bot-c12-min" suffix="/12" />
-                <Step label="Máx. posições 12C" value={cfg.c12_max_positions} step={1} min={1} max={30} onChange={(v) => upd({ c12_max_positions: v })} testID="bot-c12-max" />
               </View>
               {cfg.symbols[0] && <Confirm12Panel symbol={cfg.symbols[0]} tf={cfg.c12_tf} min={cfg.c12_min} />}
               <C20Optimize
@@ -223,7 +222,6 @@ export default function BotScreen() {
               <ChipRow options={TFS.filter((t) => !["1m", "2m", "3m"].includes(t.value))} value={cfg.c20_tf} onChange={(v) => upd({ c20_tf: v })} testID="bot-c20-tf" />
               <View style={styles.steps}>
                 <Step label="Mín. ferramentas" value={cfg.c20_min} step={1} min={10} max={20} onChange={(v) => upd({ c20_min: v })} testID="bot-c20-min" suffix="/20" />
-                <Step label="Máx. posições" value={cfg.c20_max_positions} step={1} min={1} max={30} onChange={(v) => upd({ c20_max_positions: v })} testID="bot-c20-max" />
               </View>
               {cfg.symbols[0] && <Confirm12Panel symbol={cfg.symbols[0]} tf={cfg.c20_tf} min={cfg.c20_min} set="c20" />}
               <C20Optimize
@@ -236,11 +234,11 @@ export default function BotScreen() {
             </>
           )}
           <View style={styles.c12Card} testID="bot-copt">
-            <Text style={styles.c12Title}>Pares 12C e Sniper 20 · lucro mínimo</Text>
-            <Text style={styles.note}>Um par só entra no robô se tiver mais do que este lucro no período de teste da otimização. Ao mudar, os pares já otimizados são refiltrados (grava com «Guardar»).</Text>
+            <Text style={styles.c12Title}>Critério para entrar no robô</Text>
+            <Text style={styles.note}>Um setup ou par só entra se, no período de teste, tiver lucro acima do mínimo OU acerto acima de 55% com lucro mínimo de 6%. Entre os aprovados fica o mais lucrativo com menor drawdown. Ao mudar, os pares 12C/20C são refiltrados (grava com «Guardar»).</Text>
             <ChipRow
               options={[{ value: "5", label: "> 5%" }, { value: "8", label: "> 8%" }, { value: "10", label: "> 10%" }]}
-              value={String(cfg.c_min_return ?? 5)}
+              value={String(cfg.c_min_return ?? 10)}
               onChange={(v) => upd({ c_min_return: Number(v) })}
               testID="bot-c-min-return"
             />
@@ -374,7 +372,6 @@ export default function BotScreen() {
           </View>
           <View style={styles.steps}>
             <Step label="Risco:Retorno" value={cfg.rr} step={0.5} min={0.5} max={6} onChange={(v) => upd({ rr: v })} testID="bot-rr" />
-            <Step label="Máx. posições" value={cfg.max_positions} step={1} min={1} max={30} onChange={(v) => upd({ max_positions: v })} testID="bot-max" />
           </View>
           <View style={{ paddingHorizontal: 16, gap: 8 }}>
             <Button label="Guardar Configuração" onPress={() => save.mutate(cfg)} loading={save.isPending} testID="bot-save-button" />

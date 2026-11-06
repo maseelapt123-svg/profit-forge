@@ -97,3 +97,11 @@ Follow-ups: "Faz trades automaticamente", "Está com resultados negativos", "Bai
 - MT optimizer: POST /api/bot/mt-optimize, GET /api/bot/mt-optimize/current (db.mt_opt_jobs). All ASSET_INFO symbols that exist at the broker (universe expanded: 16 crypto, 25 forex/metals, 6 stocks, 9 indices/oil; new category 'indices'), fee = max(base, spread/2), rejects setups with spread > 20% of stop, ProcessPool(spawn) parallel optimize; result replaces bot symbols/setups/c12/c20 pairs. MT entry skipped when spread > 20% of signal stop (MT_MAX_SPREAD_OF_STOP).
 - Ran MT all-pairs optimizer for user_ae22099ebd57 (2026-11-02): 56 pairs, 93 setups, 14 12C, 17 20C pairs -> bot now 48 symbols (live_mode metatrader). CLI: tests/run_mt_opt.py <user_id>.
 - Restored 15 prior forex setups (job e11f6afd834c) for user_ae22099ebd57; MT optimizer now keeps existing forex setups not re-found.
+- Entry rule: _qualifies(test ret>10 OR wr>60, ret>0); optimize() ranks by profit/drawdown; c20 grid by train ret/(1+dd); c_min_return default 10. mt_reconcile closes orphan SmartTrade MT positions (all users of the account). MT optimizer re-run 2026-11-04: 118 setups, 6 12C, 9 20C.
+
+## Update (Jun 2026)
+- Unified acceptance rule for ALL optimizers (single, all TFs, Otimizar tudo, negatives, 12C/Sniper 20, MetaTrader): test profit > 10% OR (win rate > 55% AND profit >= 6%); ranked by (train+test return)/(1+max DD). `strategies.qualifies`.
+- Setups now store test/wr; bot loop skips stored setups failing the rule. One-off cleanup kept 162 / dropped 14 (backend/tests/refilter_setups.py).
+- Removed all position limits (main bot, 12C, 20C, 2-per-candle cap).
+- MetaTrader: entry skipped if real risk (lot x stop) > 1.5% of MT equity (MT_MAX_RISK_PCT).
+- Tested: iteration_12.

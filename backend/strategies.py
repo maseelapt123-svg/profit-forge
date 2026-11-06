@@ -658,8 +658,22 @@ def optimize(df, plugins, fee, risk_pct=1.0, capital=10000.0, split=0.7, htf=Non
     results.sort(key=lambda r: (r["train"]["profit_factor"] > 1, r["train"]["return_pct"] / (1 + r["train"]["max_drawdown"])), reverse=True)
     top = results[:40]
     validated = [r for r in top if r["test"]["return_pct"] > 0 and r["test"]["profit_factor"] > 1 and r["train"]["return_pct"] > 0 and r["test"]["total_trades"] >= 5]
-    validated.sort(key=lambda r: r["test"]["return_pct"] + r["train"]["return_pct"], reverse=True)
-    return {"best": validated[0] if validated else None, "candidates": (validated or top)[:8], "tested": len(results)}
+    # most profit for the least drawdown (train + out-of-sample)
+    for r in validated:
+        r["score"] = (r["test"]["return_pct"] + r["train"]["return_pct"]) / (1 + max(r["test"]["max_drawdown"], r["train"]["max_drawdown"]))
+        r["qualified"] = qualifies(r["test"]["return_pct"], r["test"]["win_rate"])
+    validated.sort(key=lambda r: (r["qualified"], r["score"]), reverse=True)
+    best = validated[0] if validated and validated[0]["qualified"] else None  # only setups that pass the bot rule
+    return {"best": best, "candidates": (validated or top)[:8], "tested": len(results)}
+
+
+MIN_RETURN = 10.0   # every optimiser accepts a setup with > 10% test profit OR > 55% test win rate (with >= 6% profit)
+MIN_WINRATE = 55.0
+MIN_WR_RETURN = 6.0  # a > 55% win-rate setup still needs at least 6% test profit
+
+
+def qualifies(ret: float, wr: float, thr: float = MIN_RETURN) -> bool:
+    return ret > thr or (wr > MIN_WINRATE and ret >= MIN_WR_RETURN)
 
 
 def simulate(df, sig, sl_atr=1.5, rr=2.0, risk_pct=1.0, capital=10000.0, fee=0.0005, breakeven=True,

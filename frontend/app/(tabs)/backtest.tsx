@@ -107,7 +107,7 @@ export default function Backtest() {
   }, [job.error, toast]);
   const optData = jobId ? job.data : undefined;
   const optRunning = startOpt.isPending || (!!jobId && optData?.status !== "done");
-  const validRows = (optData?.results ?? []).filter((x) => x.best && x.best.test.return_pct > 6);
+  const validRows = (optData?.results ?? []).filter((x) => !!x.best);
   const [picked, setPicked] = useState<string[]>([]);
   const chosenRows = validRows.filter((x) => picked.includes(x.tf));
   const togglePick = (tfv: string) => setPicked((p) => (p.includes(tfv) ? p.filter((x) => x !== tfv) : [...p, tfv]));
@@ -199,7 +199,7 @@ export default function Backtest() {
             )}
             {(optData?.results ?? []).map((row) => (
               <View key={row.tf} style={styles.optLine} testID={`opt-row-${row.tf}`}>
-                {row.best && row.best.test.return_pct > 6 ? (
+                {row.best ? (
                   <Pressable testID={`opt-pick-${row.tf}`} onPress={() => togglePick(row.tf)} style={styles.optPick} hitSlop={6}>
                     <Ionicons
                       name={picked.includes(row.tf) ? "checkbox" : "square-outline"}
@@ -220,11 +220,11 @@ export default function Backtest() {
                         {row.best.mtf && row.htf ? ` · conf. ${row.htf.toUpperCase()}` : ""}
                       </Text>
                       <Text style={[styles.cardLabel, { color: row.best.test.return_pct >= 0 ? colors.success : colors.error }]}>
-                        Treino {pct(row.best.train.return_pct)} · Teste {pct(row.best.test.return_pct)} · {row.best.test.total_trades} trades
+                        Treino {pct(row.best.train.return_pct)} · Teste {pct(row.best.test.return_pct)} · acerto {Math.round(row.best.test.win_rate)}% · DD {Math.round(row.best.test.max_drawdown)}% · {row.best.test.total_trades} trades
                       </Text>
                     </>
                   ) : (
-                    <Text style={styles.cardLabel}>{row.error ?? "Sem configuração lucrativa — não operar"}</Text>
+                    <Text style={styles.cardLabel}>{row.error ?? "Nenhum setup com lucro > 10% ou acerto > 55% com lucro ≥ 6% — não operar"}</Text>
                   )}
                 </View>
                 {row.best && (
@@ -237,7 +237,7 @@ export default function Backtest() {
             {optData?.status === "done" &&
               (validRows.length ? (
                 <View style={{ gap: 8 }}>
-                  <Text style={styles.cardLabel}>Só setups com lucro acima de 6% no período de teste podem ir para o robô. Marca os que queres usar.</Text>
+                  <Text style={styles.cardLabel}>Só setups com lucro acima de 10% OU acerto acima de 55% com lucro mínimo de 6% no teste (ordenados por lucro/drawdown) podem ir para o robô. Marca os que queres usar.</Text>
                   <View style={{ flexDirection: "row", gap: 8 }}>
                     <Button
                       label={picked.length === validRows.length ? "Limpar" : "Marcar todos"}
@@ -257,7 +257,7 @@ export default function Backtest() {
                 </View>
               ) : (
                 <Text style={styles.note} testID="opt-none">
-                  Nenhum timeframe foi lucrativo em treino E teste para este ativo. Não operes este ativo com estas estratégias.
+                  Nenhum timeframe teve lucro acima de 10% ou acerto acima de 55% com lucro mínimo de 6% no teste para este ativo. Não operes este ativo com estas estratégias.
                 </Text>
               ))}
           </Animated.View>

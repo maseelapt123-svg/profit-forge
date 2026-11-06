@@ -6,7 +6,7 @@ import { useToast } from "@/src/components/toast";
 import { Button } from "@/src/components/ui";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Setup = { symbol: string; tf: string; strategy: string; rr: number; sl_atr: number; test: number };
+type Setup = { symbol: string; tf: string; strategy: string; rr: number; sl_atr: number; test: number; wr?: number; dd?: number };
 type Pair = { symbol: string; display: string; tf: string; min: number; rr: number; test: number };
 type Job = {
   job_id?: string; status?: "running" | "done" | "error"; current?: string | null; step?: number; total?: number; error?: string;
@@ -63,7 +63,7 @@ export function MtOptimize() {
           </Text>
           {j.results.setups.slice(0, 8).map((s) => (
             <Text key={`${s.symbol}${s.tf}`} style={styles.row}>
-              {s.symbol.replace("=X", "").replace("-USD", "")} {s.tf.toUpperCase()} · {s.strategy} · 1:{s.rr} · teste +{s.test}%
+              {s.symbol.replace("=X", "").replace("-USD", "")} {s.tf.toUpperCase()} · {s.strategy} · 1:{s.rr} · +{s.test}%{s.wr != null ? ` · acerto ${s.wr}% · DD ${s.dd}%` : ""}
             </Text>
           ))}
           {[...j.results.c12.map((p) => ({ ...p, k: "12C" })), ...j.results.c20.map((p) => ({ ...p, k: "20C" }))].slice(0, 8).map((p) => (

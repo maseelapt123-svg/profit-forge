@@ -23,7 +23,7 @@ import yfinance as yf
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-from strategies import STRATEGIES, CONF_DEFAULT, C12_LABELS, C20_LABELS, confirm12_matrix, confirm20_matrix, confirm_signals, simulate, confluence_detail, PLUGIN_DEFAULTS, PLUGIN_META, FEES, compute_signals, smc_analyze, atr, run_backtest, optimize, strategy_signals, trend_filtered, apply_filters, mtf_filtered, htf_trend, ema, rsi, vwap, sr_levels, fib_levels, detect_patterns  # noqa: E402
+from strategies import MIN_RETURN, MIN_WINRATE, MIN_WR_RETURN, qualifies, STRATEGIES, CONF_DEFAULT, C12_LABELS, C20_LABELS, confirm12_matrix, confirm20_matrix, confirm_signals, simulate, confluence_detail, PLUGIN_DEFAULTS, PLUGIN_META, FEES, compute_signals, smc_analyze, atr, run_backtest, optimize, strategy_signals, trend_filtered, apply_filters, mtf_filtered, htf_trend, ema, rsi, vwap, sr_levels, fib_levels, detect_patterns  # noqa: E402
 import hfx  # noqa: E402
 import binance_exec  # noqa: E402
 import metaapi_exec  # noqa: E402
@@ -659,6 +659,7 @@ async def _mt_acc(uid: str) -> Optional[dict]:
 
 _mt_symbols_cache: Dict[str, tuple] = {}
 MT_MAX_SPREAD_OF_STOP = 0.2  # skip MT entries whose spread is more than 20% of the stop distance
+MT_MAX_RISK_PCT = 1.5  # skip MT entries whose real risk (lot x stop) is above 1.5% of the MT equity
 
 
 async def _go_mt(uid: str, bot: dict, pos: dict) -> bool:
@@ -706,8 +707,14 @@ async def _go_mt(uid: str, bot: dict, pos: dict) -> bool:
     step, vmin = float(sp.get("volumeStep", 0.01)), float(sp.get("minVolume", 0.01))
     vol = min(float(bot.get("mt_max_lots", 0.1)), float(sp.get("maxVolume", 100)), math.floor(risk / loss_per_lot / step + 1e-9) * step)
     if vol < vmin:
-        vol = vmin  # user choice: always open on MT — with the minimum lot even if that risks more than risk_pct
+        vol = vmin  # the minimum lot may risk a bit more than risk_pct — allowed only up to MT_MAX_RISK_PCT
     vol = round(vol, 2)
+    eq = float(inf.get("equity", 0))
+    risk_pct_real = vol * loss_per_lot / eq * 100 if eq > 0 else 999
+    if risk_pct_real > MT_MAX_RISK_PCT:
+        await bot_log(uid, "skip", f"{tag}: {vol} lote(s) arriscaria {risk_pct_real:.2f}% da conta (máx. {MT_MAX_RISK_PCT:g}%) "
+                                   f"— não entra no MetaTrader", pos["symbol"])
+        return False
     dg = int(sp.get("digits", 5))
     sgn = 1 if buy else -1
     body = {"actionType": "ORDER_TYPE_BUY" if buy else "ORDER_TYPE_SELL", "symbol": mt_sym, "volume": vol,
@@ -719,6 +726,8 @@ async def _go_mt(uid: str, bot: dict, pos: dict) -> bool:
         await bot_log(uid, "skip", f"{tag}: MetaTrader recusou a ordem ({e})", pos["symbol"])
         return False
     pos["live"] = {"exchange": "mt", "symbol": mt_sym, "volume": vol, "mt_position": r.get("positionId") or r.get("orderId")}
+    if not r.get("positionId"):
+        await bot_log(uid, "info", f"{tag}: a corretora devolveu só o nº da ordem ({r.get('orderId')})", pos["symbol"])
     # keep the app's position identical to the broker's (entry at the broker price, stop/target beyond the spread)
     pos.update({"entry": entry, "stop_loss": body["stopLoss"], "take_profit": body["takeProfit"]})
     if pos.get("stop_dist"):
@@ -736,8 +745,50 @@ async def _mt_trade(p: dict, body: dict, what: str) -> bool:
         await metaapi_exec.trade(acc["account_id"], acc["region"], {**body, "positionId": str(p["live"]["mt_position"])})
         return True
     except (metaapi_exec.MetaApiError, httpx.HTTPError) as e:
-        await bot_log(p["user_id"], "skip", f"{display(p['symbol'])}: MetaTrader {what} falhou ({e})", p["symbol"])
+        if "NOT_FOUND" in str(e) and body.get("actionType") == "POSITION_CLOSE_ID":
+            return True  # already closed by the broker's own stop/target
+        tail = " — volta a tentar sozinho no próximo ciclo" if what == "fecho" else ""
+        await bot_log(p["user_id"], "skip", f"{display(p['symbol'])}: MetaTrader {what} falhou ({str(e)[:90]}){tail}", p["symbol"])
         return False
+
+
+_mt_reconcile_at: Dict[str, float] = {}
+
+
+async def mt_reconcile(uid: str) -> None:
+    """Close on MetaTrader every robot position (comment 'SmartTrade') that is no longer open in the app — e.g. when the
+    close was sent while MetaApi was briefly disconnected. Runs at most every 2 min; ignores positions < 3 min old."""
+    if time.time() - _mt_reconcile_at.get(uid, 0) < 120:
+        return
+    _mt_reconcile_at[uid] = time.time()
+    acc = await _mt_acc(uid)
+    if not acc or not metaapi_exec.configured():
+        return
+    try:
+        mt_pos = await metaapi_exec.positions(acc["account_id"], acc["region"])
+    except (metaapi_exec.MetaApiError, httpx.HTTPError):
+        return  # still disconnected: retry next time
+    # every app user linked to this same MT account counts (never close another user's live position)
+    owners = [a["user_id"] for a in await db.live_accounts.find({"kind": "mt", "account_id": acc["account_id"]}, {"_id": 0, "user_id": 1}).to_list(50)] or [uid]
+    open_ids = {str((p.get("live") or {}).get("mt_position")) for p in
+                await db.positions.find({"user_id": {"$in": owners}, "status": "open", "live.exchange": "mt"}, {"_id": 0, "live": 1}).to_list(1000)}
+    now = datetime.now(timezone.utc)
+    for mp in mt_pos:
+        pid = str(mp.get("id"))
+        if mp.get("comment") != "SmartTrade" or pid in open_ids:
+            continue
+        try:
+            age = (now - datetime.fromisoformat(str(mp.get("time")).replace("Z", "+00:00"))).total_seconds()
+        except ValueError:
+            age = 0
+        if age < 180:
+            continue
+        try:
+            await metaapi_exec.trade(acc["account_id"], acc["region"], {"actionType": "POSITION_CLOSE_ID", "positionId": pid})
+            await bot_log(uid, "close", f"MetaTrader: {mp.get('symbol')} fechado agora (já estava fechado na app; o fecho "
+                                        f"anterior falhou por falta de ligação) · resultado {float(mp.get('profit') or 0):+.2f}", None)
+        except (metaapi_exec.MetaApiError, httpx.HTTPError):
+            continue
 
 
 async def _mt_breakeven(p: dict) -> None:
@@ -879,7 +930,7 @@ BOT_DEFAULT = {"enabled": False, "symbols": ["BTC-USD", "ETH-USD", "EURUSD=X"], 
                "risk_pct": 1.0, "sl_atr": 1.5, "rr": 2.0, "max_positions": 30, "ai_filter": False,
                "conf_votes": 2, "conf_score": 55.0, "c12_enabled": False, "c12_min": 10, "c12_max_positions": 30, "c12_tf": "1h",
                "c20_enabled": False, "c20_min": 16, "c20_max_positions": 30, "c20_tf": "1h", "c20_rr": 5.0, "c20_ptp_r": 2.0,
-               "ptp_enabled": True, "breakeven_enabled": True, "ptp_pct": 50.0, "ptp_r": 1.0, "c20_pairs": [], "c12_pairs": [], "c_min_return": 5.0, "weekly_reopt": True, "live_mode": "paper", "live_max_usd": 50.0,
+               "ptp_enabled": True, "breakeven_enabled": True, "ptp_pct": 50.0, "ptp_r": 1.0, "c20_pairs": [], "c12_pairs": [], "c_min_return": 10.0, "weekly_reopt": True, "live_mode": "paper", "live_max_usd": 50.0,
                "mt_max_lots": 0.1, "mt_suffix": ""}
 
 
@@ -891,6 +942,8 @@ class BotSetup(BaseModel):
     rr: float = Field(2.0, ge=0.5, le=6)
     trend_filter: bool = True
     mtf: bool = False
+    test: Optional[float] = None  # out-of-sample return % from the optimiser
+    wr: Optional[float] = None  # out-of-sample win rate %
 
 
 class BotIn(BaseModel):
@@ -919,7 +972,7 @@ class BotIn(BaseModel):
     c20_ptp_r: float = Field(2.0, ge=0.5, le=5)
     c20_pairs: List[Dict[str, Any]] = []
     c12_pairs: List[Dict[str, Any]] = []
-    c_min_return: float = Field(5.0, ge=0, le=50)
+    c_min_return: float = Field(10.0, ge=0, le=50)
     weekly_reopt: bool = True
     live_mode: str = Field("paper", pattern="^(paper|binance|metatrader)$")
     live_max_usd: float = Field(50, ge=5, le=100000)
@@ -1084,8 +1137,6 @@ async def _run_stream(uid: str, bot: dict, kind: str) -> int:
     if datetime.now(timezone.utc).hour in fixes.get("hours", []):
         return 0
     for sym in bot["symbols"]:
-        if opened >= 2:  # avoid opening a basket of correlated trades on the same candle
-            break
         ov = pairs.get(sym)
         if ov and not ov.get("enabled", True):
             continue  # optimiser found no profitable TF/R:R for this pair
@@ -1129,9 +1180,6 @@ async def _run_stream(uid: str, bot: dict, kind: str) -> int:
                 continue
             pnl = await close_position(existing, price, "signal")
             await bot_log(uid, "close", f"{tag} fechado por confirmações contrárias: {pnl:+.2f} $", sym)
-        if await db.positions.count_documents({"user_id": uid, "status": "open", kind: True}) >= bot.get(f"{kind}_max_positions", 30):
-            await bot_log(uid, "skip", f"{tag} {side} ignorado: limite de posições {st['name']}", sym)
-            continue
         a = float(atr(df).iloc[-1])
         if a <= 0:
             continue
@@ -1370,6 +1418,7 @@ def _c20_grid(df: pd.DataFrame, htf, fee: float, bot: dict, kind: str = "c20") -
     ptp_r = float(bot.get("c20_ptp_r", 2.0)) if kind == "c20" else float(bot.get("ptp_r", 1.0))
     split = int(len(df) * 0.7)
     ptp = float(bot.get("ptp_pct", 50)) if bot.get("ptp_enabled") else 0.0
+    thr = float(bot.get("c_min_return", MIN_C_RETURN))
     best = None
     for mn in mins:
         sig = apply_filters(df, confirm_signals(mat, mn), "confirm20", False, htf is not None, htf)
@@ -1380,10 +1429,18 @@ def _c20_grid(df: pd.DataFrame, htf, fee: float, bot: dict, kind: str = "c20") -
             if m_tr["total_trades"] < 3:
                 continue
             cand = {"min": mn, "rr": rr, "train": m_tr["return_pct"], "test": m_te["return_pct"],
-                    "test_trades": m_te["total_trades"], "test_winrate": m_te["win_rate"]}
-            if best is None or cand["train"] > best["train"]:
+                    "test_trades": m_te["total_trades"], "test_winrate": m_te["win_rate"], "test_dd": m_te["max_drawdown"],
+                    # most profit for the least drawdown (train + out-of-sample)
+                    "score": (m_tr["return_pct"] + m_te["return_pct"]) / (1 + max(m_tr["max_drawdown"], m_te["max_drawdown"])),
+                    "qualified": m_tr["return_pct"] > 0 and qualifies(m_te["return_pct"], m_te["win_rate"], thr)}
+            if best is None or _c_rank(cand) > _c_rank(best):
                 best = cand
     return best
+
+
+def _c_rank(c: Optional[dict]) -> tuple:
+    """12C / Sniper 20 ranking: pairs passing the rule (> thr% profit, or > 55% win rate with >= 6% profit) first, then profit / drawdown."""
+    return (bool(c.get("qualified")), c.get("score", -1e9)) if c else (False, -1e9)
 
 
 async def _c20_optimize(job_id: str):
@@ -1409,17 +1466,17 @@ async def _c20_optimize(job_id: str):
                 except Exception:
                     logger.exception("c20 optimize %s %s", sym, tf)
                     continue
-                if b and (best is None or b["test"] > best["test"]):
+                if b and _c_rank(b) > _c_rank(best):
                     best = {**b, "tf": tf}
-            pair = {"symbol": sym, "display": display(sym), "enabled": bool(best and best["test"] > float(bot.get("c_min_return", MIN_C_RETURN))), **(best or {"tf": bot.get(f"{kind}_tf", "1h"), "rr": bot.get(f"{kind}_rr") or bot["rr"], "min": bot.get(f"{kind}_min", 16), "test": None})}
+            pair = {"symbol": sym, "display": display(sym), "enabled": bool(best and best.get("qualified")), **(best or {"tf": bot.get(f"{kind}_tf", "1h"), "rr": bot.get(f"{kind}_rr") or bot["rr"], "min": bot.get(f"{kind}_min", 16), "test": None})}
             job["results"].append(pair)
             # save immediately so nothing is lost if the app/server sleeps
             await db.bots.update_one({"user_id": uid}, {"$pull": {f"{kind}_pairs": {"symbol": sym}}})
-            await db.bots.update_one({"user_id": uid}, {"$push": {f"{kind}_pairs": {k: pair[k] for k in ("symbol", "tf", "rr", "min", "enabled", "test")}}})
+            await db.bots.update_one({"user_id": uid}, {"$push": {f"{kind}_pairs": {k: pair[k] for k in ("symbol", "tf", "rr", "min", "enabled", "test", "test_winrate")}}})
     finally:
         job["status"], job["current"] = "done", None
         on = sum(1 for p in job["results"] if p["enabled"])
-        await bot_log(uid, "fix", f"{'Sniper 20' if kind == 'c20' else '12 Confirmações'} otimizado: {on}/{len(job['results'])} pares ativos (lucro no teste > {float(bot.get('c_min_return', MIN_C_RETURN)):g}%)")
+        await bot_log(uid, "fix", f"{'Sniper 20' if kind == 'c20' else '12 Confirmações'} otimizado: {on}/{len(job['results'])} pares ativos (teste: lucro > {float(bot.get('c_min_return', MIN_C_RETURN)):g}% ou acerto > {MIN_WINRATE:g}% com lucro ≥ {MIN_WR_RETURN:g}%)")
 
 
 def _new_c_job(uid: str, kind: str, bot: dict) -> Optional[str]:
@@ -1501,7 +1558,7 @@ async def _negopt(job_id: str, items: List[SimItem]):
                     df = await get_df(it.symbol, it.tf, long=True)
                     htf = await get_htf(it.symbol, it.tf)
                     b = (await asyncio.to_thread(optimize, df, plugins, fee, 1.0, 10000.0, 0.7, htf))["best"]
-                    if b and b["test"]["return_pct"] > MIN_BOT_RETURN:
+                    if b and _qualifies(b["test"]["return_pct"], b["test"]["win_rate"]):
                         prop["best"] = {"strategy": b["strategy"], "sl_atr": b["sl_atr"], "rr": b["rr"], "trend_filter": b["trend_filter"],
                                         "mtf": b["mtf"], "tf": it.tf, "test": b["test"]["return_pct"], "winrate": b["test"]["win_rate"]}
                 elif it.kind == "c20":
@@ -1511,9 +1568,9 @@ async def _negopt(job_id: str, items: List[SimItem]):
                         if len(df) < 600:
                             continue
                         b = await asyncio.to_thread(_c20_grid, df, await get_htf(it.symbol, tf), fee, bot)
-                        if b and (best is None or b["test"] > best["test"]):
+                        if b and _c_rank(b) > _c_rank(best):
                             best = {**b, "tf": tf}
-                    if best and best["test"] > float(bot.get("c_min_return", MIN_C_RETURN)):
+                    if best and best.get("qualified"):
                         prop["best"] = {"tf": best["tf"], "rr": best["rr"], "min": best["min"], "test": best["test"], "winrate": best["test_winrate"]}
             except HTTPException:
                 pass
@@ -1566,7 +1623,7 @@ async def negopt_apply(job_id: str, request: Request):
                 b = r["best"]
                 setups = [s for s in setups if not (s["symbol"] == r["symbol"] and s["tf"] == r["tf"])]
                 setups.append({"symbol": r["symbol"], "tf": r["tf"], "strategy": b["strategy"], "sl_atr": b["sl_atr"], "rr": b["rr"],
-                               "trend_filter": b["trend_filter"], "mtf": b["mtf"]})
+                               "trend_filter": b["trend_filter"], "mtf": b["mtf"], "test": b["test"], "wr": b["winrate"]})
                 replaced += 1
             else:
                 removed += 1
@@ -1583,8 +1640,9 @@ async def negopt_apply(job_id: str, request: Request):
 
 
 _bot_opt_jobs: Dict[str, dict] = {}
-MIN_BOT_RETURN = 6.0  # only setups with > 6% profit in the out-of-sample test period may go to the bot
-MIN_C_RETURN = 5.0  # 12C / Sniper 20 pairs only go to the bot with > 5% profit in the test period
+MIN_BOT_RETURN = MIN_RETURN  # > 10% test profit, OR > 55% win rate with >= 6% test profit
+_qualifies = qualifies
+MIN_C_RETURN = MIN_RETURN  # same rule for 12C / Sniper 20 pairs
 
 
 async def _save_job(job: dict) -> None:
@@ -1622,18 +1680,19 @@ async def _bot_optimize_all(job_id: str, resume: bool = False):
                 except Exception:  # keep going with the other timeframes
                     logger.exception("bot optimize-all %s %s", sym, tf)
                     b = None
-                if b and b["test"]["return_pct"] > MIN_BOT_RETURN:
+                if b and _qualifies(b["test"]["return_pct"], b["test"]["win_rate"]):
                     job["results"].append({"symbol": sym, "display": display(sym), "tf": tf, "best": b})
                     await db.bots.update_one({"user_id": uid}, {"$pull": {"setups": {"symbol": sym, "tf": tf}}})
                     await db.bots.update_one({"user_id": uid}, {"$push": {"setups": {
                         "symbol": sym, "tf": tf, "strategy": b["strategy"], "sl_atr": b["sl_atr"], "rr": b["rr"],
-                        "trend_filter": b["trend_filter"], "mtf": b["mtf"]}}})
+                        "trend_filter": b["trend_filter"], "mtf": b["mtf"],
+                        "test": round(b["test"]["return_pct"], 2), "wr": round(b["test"]["win_rate"], 1)}}})
                     job["applied"] += 1
                     await bot_log(uid, "fix", f"Setup adicionado: {display(sym)} {tf.upper()} {b['strategy']} (teste {b['test']['return_pct']:+.1f}%)", sym)
                 job["done_keys"].append(k)
                 job["step"] = len(job["done_keys"])
                 await _save_job(job)
-        job["results"].sort(key=lambda x: -(x["best"]["test"]["return_pct"]))
+        job["results"].sort(key=lambda x: -x["best"].get("score", x["best"]["test"]["return_pct"]))
         job["status"] = "done"
     except asyncio.CancelledError:  # server shutting down: keep status "running" so it resumes on next start
         raise
@@ -1670,11 +1729,12 @@ async def bot_optimize_all_apply(job_id: str, body: OptApplyIn, request: Request
     uid = u["user_id"]
     job = await _get_job(job_id, uid)
     chosen = [x for x in job["results"] if f"{x['symbol']}|{x['tf']}" in set(body.keys)
-              and x["best"]["test"]["return_pct"] > MIN_BOT_RETURN]
+              and _qualifies(x["best"]["test"]["return_pct"], x["best"]["test"]["win_rate"])]
     if not chosen and not body.replace:
         raise HTTPException(400, "Escolhe pelo menos um setup")
     new = [{"symbol": x["symbol"], "tf": x["tf"], "strategy": x["best"]["strategy"], "sl_atr": x["best"]["sl_atr"],
-            "rr": x["best"]["rr"], "trend_filter": x["best"]["trend_filter"], "mtf": x["best"]["mtf"]} for x in chosen]
+            "rr": x["best"]["rr"], "trend_filter": x["best"]["trend_filter"], "mtf": x["best"]["mtf"],
+            "test": round(x["best"]["test"]["return_pct"], 2), "wr": round(x["best"]["test"]["win_rate"], 1)} for x in chosen]
     bot = await get_bot(uid)
     keys = {(x["symbol"], x["tf"]) for x in new}
     keep = [] if body.replace else [x for x in (bot.get("setups") or []) if (x["symbol"], x["tf"]) not in keys]
@@ -1726,7 +1786,6 @@ async def _mt_optimize(job: dict):
         aid, reg = acc["account_id"], acc["region"]
         bot = await get_bot(uid)
         plugins = await user_plugins(uid)
-        thr_c = float(bot.get("c_min_return", MIN_C_RETURN))
         names = set(await metaapi_exec.symbols(aid, reg))
         cands = [(s, metaapi_exec.to_mt_symbol(s, bot.get("mt_suffix", ""))) for s in ASSET_INFO]
         cands = [(s, m) for s, m in cands if m in names]
@@ -1768,12 +1827,16 @@ async def _mt_optimize(job: dict):
                                           for _, df, htf, _ in ready], return_exceptions=True)
             for (tf, df, htf, a), out in zip(ready, outs):
                 ok_stop = lambda k: sp["abs"] <= MT_MAX_SPREAD_OF_STOP * k * a  # noqa: E731
-                b = None if isinstance(out, BaseException) else out["best"]
+                cands_ok = [] if isinstance(out, BaseException) else [
+                    c for c in out.get("candidates") or [] if c["test"]["total_trades"] >= 5 and c["test"]["profit_factor"] > 1
+                    and _qualifies(c["test"]["return_pct"], c["test"]["win_rate"]) and ok_stop(c["sl_atr"])]
+                b = cands_ok[0] if cands_ok else None  # candidates are ranked by profit / drawdown
                 if isinstance(out, BaseException):
                     logger.warning("mt optimize %s %s: %s", s, tf, out)
-                if b and b["test"]["return_pct"] > MIN_BOT_RETURN and ok_stop(b["sl_atr"]):
+                if b:
                     setups.append({"symbol": s, "tf": tf, "strategy": b["strategy"], "sl_atr": b["sl_atr"], "rr": b["rr"],
-                                   "trend_filter": b["trend_filter"], "mtf": b["mtf"], "test": round(b["test"]["return_pct"], 1)})
+                                   "trend_filter": b["trend_filter"], "mtf": b["mtf"], "test": round(b["test"]["return_pct"], 1),
+                                   "wr": round(b["test"]["win_rate"], 1), "dd": round(b["test"]["max_drawdown"], 1)})
                 if ok_stop(bot["sl_atr"]):
                     for kind, store in (("c12", c12), ("c20", c20)):
                         try:
@@ -1781,7 +1844,7 @@ async def _mt_optimize(job: dict):
                         except Exception:
                             logger.exception("mt optimize %s %s %s", kind, s, tf)
                             continue
-                        if g and g["test"] > thr_c and (s not in store or g["test"] > store[s]["test"]):
+                        if g and g.get("qualified") and _c_rank(g) > _c_rank(store.get(s)):
                             store[s] = {"symbol": s, "display": display(s), "enabled": True, "tf": tf, **g}
             job["step"] += len(MT_OPT_TFS)
             job["found"] = {"setups": len(setups), "c12": len(c12), "c20": len(c20)}
@@ -1794,12 +1857,12 @@ async def _mt_optimize(job: dict):
         syms = sorted({x["symbol"] for x in setups} | set(c12) | set(c20) | {x["symbol"] for x in kept_fx})
         if syms:
             await db.bots.update_one({"user_id": uid}, {"$set": {
-                "symbols": syms, "setups": [{k: v for k, v in x.items() if k != "test"} for x in setups] + kept_fx,
+                "symbols": syms, "setups": [{k: v for k, v in x.items() if k != "dd"} for x in setups] + kept_fx,
                 "c12_pairs": list(c12.values()), "c20_pairs": list(c20.values()),
                 "c12_enabled": bool(c12), "c20_enabled": bool(c20)}})
         job["found"] = {"setups": len(setups), "c12": len(c12), "c20": len(c20)}
-        job["results"] = {"setups": sorted(setups, key=lambda x: -x["test"]),
-                          "c12": sorted(c12.values(), key=lambda x: -x["test"]), "c20": sorted(c20.values(), key=lambda x: -x["test"])}
+        job["results"] = {"setups": sorted(setups, key=lambda x: -x["test"] / (1 + x["dd"])),
+                          "c12": sorted(c12.values(), key=lambda x: -x["score"]), "c20": sorted(c20.values(), key=lambda x: -x["score"])}
         job["applied"] = bool(syms)
         await bot_log(uid, "fix", f"Otimizador MetaTrader: {len(spreads)} pares testados com o spread real · {len(syms)} pares no robô "
                                   f"({len(setups)} setups, {len(c12)} 12C, {len(c20)} Sniper 20)")
@@ -1866,8 +1929,10 @@ async def _run_bot_cycle(bot: dict) -> int:
     plugins["_c12"] = {"min": bot.get("c12_min", 10)}
     acc = await get_account(uid)
     opened = 0
-    setups = bot.get("setups") or []
-    with_setup = {x["symbol"] for x in setups}
+    # setups optimised under an older rule are skipped if they fail today's rule (> 10% or > 55% win rate with >= 6%)
+    all_setups = bot.get("setups") or []
+    setups = [x for x in all_setups if x.get("test") is None or _qualifies(x["test"], x.get("wr") or 0)]
+    with_setup = {x["symbol"] for x in all_setups}
     jobs = [{"symbol": s, "tf": bot["tf"], "strategy": bot["strategy"], "sl_atr": bot["sl_atr"], "rr": bot["rr"],
              "trend_filter": bot.get("trend_filter", True), "mtf": bot.get("mtf", True)}
             for s in bot["symbols"] if s not in with_setup] + setups
@@ -1911,10 +1976,6 @@ async def _run_bot_cycle(bot: dict) -> int:
                 continue
             pnl = await close_position(existing, price, "signal")
             await bot_log(uid, "close", f"{tag} fechado por sinal contrário: {pnl:+.2f} $", sym)
-        n_open = await db.positions.count_documents({"user_id": uid, "status": "open", "source": "bot", "c12": {"$ne": True}, "c20": {"$ne": True}})
-        if n_open >= bot["max_positions"]:
-            await bot_log(uid, "skip", f"Sinal {side} em {tag} ignorado: limite de {bot['max_positions']} posições", sym)
-            continue
         a = float(atr(df).iloc[-1])
         if a <= 0:
             continue
@@ -1976,6 +2037,12 @@ async def bot_loop():
                     await run_bot_cycle({**BOT_DEFAULT, **b})
                 except Exception:
                     logger.exception("bot cycle failed for %s", b.get("user_id"))
+            # MT orphan clean-up for every user with an MT account (also after the bot left MetaTrader mode)
+            for a in await db.live_accounts.find({"kind": "mt"}, {"_id": 0, "user_id": 1}).to_list(100):
+                try:
+                    await mt_reconcile(a["user_id"])
+                except Exception:
+                    logger.exception("mt reconcile failed for %s", a["user_id"])
             bot_users = {b["user_id"] for b in bots}
             await maybe_weekly_reopt(await db.bots.find({}, {"_id": 0}).to_list(500))
             for uid in await db.positions.distinct("user_id", {"status": "open"}):
@@ -2030,7 +2097,7 @@ async def bot_put(body: BotIn, request: Request):
     thr = float(data.get("c_min_return", MIN_C_RETURN))
     if thr != float(prev.get("c_min_return", MIN_C_RETURN)):  # new minimum profit -> re-filter the optimised pairs
         for k in ("c12_pairs", "c20_pairs"):
-            data[k] = [{**p, "enabled": p.get("test") is not None and p["test"] > thr} for p in data.get(k) or []]
+            data[k] = [{**p, "enabled": p.get("test") is not None and _qualifies(p["test"], p.get("test_winrate", 0), thr)} for p in data.get(k) or []]
     await db.bots.update_one({"user_id": u["user_id"]}, {"$set": {**data, "updated_at": datetime.now(timezone.utc).isoformat()}, "$unset": unset}, upsert=True)
     if body.enabled != prev["enabled"]:
         await bot_log(u["user_id"], "status", "Robô ativado" if body.enabled else "Robô parado")
@@ -2243,7 +2310,7 @@ ADJ_SPEC = {
     "hfx": {"expiry": ("choice", [1, 3]), "amount": ("num", 1, 1000), "min_winrate": ("num", 50, 90),
             "max_per_hour": ("int", 1, 60), "min_votes": ("int", 1, 7), "strategy": ("choice", ["auto", "plugins"]),
             "ai_filter": ("bool",), "remove_pairs": ("list",)},
-    "bot": {"risk_pct": ("num", 0.1, 5), "sl_atr": ("num", 0.5, 5), "rr": ("num", 0.5, 6), "max_positions": ("int", 1, 10),
+    "bot": {"risk_pct": ("num", 0.1, 5), "sl_atr": ("num", 0.5, 5), "rr": ("num", 0.5, 6),
             "trend_filter": ("bool",), "mtf": ("bool",), "ai_filter": ("bool",), "strategy": ("choice", STRATEGIES),
             "tf": ("choice", list(TIMEFRAMES)), "conf_votes": ("int", 1, 10), "conf_score": ("num", 40, 90),
             "remove_symbols": ("list",), "plugin_on": ("plugin",), "plugin_off": ("plugin",)},

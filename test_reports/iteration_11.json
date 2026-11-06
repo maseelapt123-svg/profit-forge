@@ -1,0 +1,39 @@
+{
+  "summary": "Tested MT orphan-position reconcile + new bot entry rule. Backend: 24/24 pytest pass (unit tests with MetaApi mocked via monkeypatch, so no real MT orders were placed and the optimizer was not touched or restarted). mt_reconcile closes a SmartTrade MT position when it is older than 3 min and not open in the app (it sends POSITION_CLOSE_ID). It leaves alone positions open in the app (int/str id mismatch handled), positions younger than 3 min, and manual or other-comment positions. The 2-min throttle works. A MetaApiError from positions() is swallowed. A trade() error is swallowed and the loop moves on to the next position. A bad time field is skipped. _mt_trade: a CLOSE that fails with NOT_FOUND returns True with no log. Other errors return False and log a message containing 'volta a tentar sozinho' (fecho only, not parcial). _qualifies: all requested cases pass, plus edge cases (10,60)->False, (0,90)->False, (8,50,8)->False. PUT /api/bot with a changed c_min_return re-filters c12_pairs and c20_pairs (test=None -> disabled). With the threshold unchanged, the client flags are kept. user_test1 config was restored. Code review: bot_loop calls mt_reconcile only when live_mode=='metatrader'. Frontend /bot: the bot-copt card shows 'Critério para entrar no robô' with the 60% rule text and chips > 5% / > 8% / > 10% (testIDs bot-c-min-return-5/8/10). Tapping a chip switches the active state. No page errors.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "mt_reconcile / bot_loop", "issue": "Reconcile only runs for enabled bots in live_mode 'metatrader'. When the 7-day MT demo ends (_run_bot_cycle switches live_mode to 'paper'), or the user disables the bot, positions still carry live.exchange='mt'. check_exits/_live_sell still try the MT close, but a failure is never retried and the log message falsely says 'volta a tentar sozinho'. Suggest: reconcile for any user with an MT live_account and open or recent mt positions, not just by live_mode."},
+      {"endpoint": "bot_loop", "issue": "mt_reconcile shares a try block with run_bot_cycle. If the cycle raises, reconcile is skipped for that user in that loop. Suggest a separate try."},
+      {"endpoint": "_go_mt / mt_reconcile", "issue": "The app stores mt_position = positionId OR orderId. If MetaApi ever returns only orderId and it differs from the MT position id (MT4 or some brokers), reconcile would treat the live app position as an orphan and close it after 3 min. Low probability on MT5, where position id == opening order ticket. Consider re-reading positionId or matching by symbol+volume+time as a fallback."},
+      {"endpoint": "_mt_trade (parcial)", "issue": "Failed partial closes (POSITION_PARTIAL) are never retried, so MT volume can drift from the app's qty. Only full orphans are reconciled."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/bot (bot-copt card)", "issues": ["ChipRow has its own paddingHorizontal:16, so the chips start 16px further in than the card's title and text (x=45 vs 29). Misaligned inside the card.", "Chips are 36px tall, below the 44px minimum touch target.", "The chip value is String(cfg.c_min_return). If the backend value is anything other than 5/8/10 (the API allows 0-50), no chip shows as active."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iter17_mt_reconcile_qualifies.py", "/app/test_reports/pytest/pytest_iter11.xml"],
+  "action_items": [
+    "(Medium) Run mt_reconcile for every user with an MT live_account and open or recent mt-linked positions, not only for bots with live_mode=='metatrader'. Otherwise the 'volta a tentar sozinho' promise is broken after the demo period ends or when the bot is disabled.",
+    "(Low) Wrap mt_reconcile in its own try/except in bot_loop so a run_bot_cycle failure doesn't skip it.",
+    "(Low) Guard against orderId != positionId in _go_mt before relying on it in reconcile.",
+    "(Low UI) Align ChipRow inside the bot-copt card (paddingHorizontal 0 or a negative margin) and raise chip height to 44."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 2839 lines; it should be split into modules (mt/metaapi bridge, bot engine, optimizer, routes).",
+    "EA comments are 'ST <label>' / '12C n/12' and the test order uses 'ST teste', so reconcile (comment=='SmartTrade' exact) will not close EA or manual trades. Correct.",
+    "The reconcile success log uses the MT profit, while the app already booked P&L at its own close price. The two can differ; this is informational only."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter17_mt_reconcile_qualifies.py (new)"],
+  "success_rate": {"backend": "100% (24/24)", "frontend": "100%"},
+  "seed_data_creation": "Temporary positions and bot_logs for user_id 'TEST_user_reconcile_test' were deleted after each test. The user_test1 bot doc was backed up and restored (c_min_return 5.0, enabled False, paper).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: cd /app/backend; set -a; . ./.env; . ../frontend/.env; set +a; pytest -n 0 tests/test_iter17_mt_reconcile_qualifies.py. Motor calls in unit tests must be created inside the loop (run(lambda: db...)). The frontend .env uses EXPO_PUBLIC_BACKEND_URL (no EXPO_BACKEND_URL key). UI auth: localStorage auth_token = JSON 'test_token_123'.",
+  "rca_of_issue": "Original bug: _live_sell -> _mt_trade POSITION_CLOSE_ID failed while MetaApi was disconnected. The app marked the position closed anyway and nothing retried, leaving an orphan on MT5. Fix verified: mt_reconcile periodically lists MT positions and closes SmartTrade-comment ones (older than 3 min) that are not open in the app. Remaining gap: it only runs while the bot is enabled and in metatrader mode."
+}

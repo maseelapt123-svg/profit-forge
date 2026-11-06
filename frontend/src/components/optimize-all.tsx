@@ -81,7 +81,7 @@ export function OptimizeAll({ onDone }: { onDone: () => void }) {
     <View style={styles.card} testID="bot-optimize-all">
       <Text style={styles.title}>Otimizar tudo</Text>
       <Text style={styles.muted}>
-        Testa todas as estratégias e plugins em todos os timeframes (1m a 1D) de cada ativo do robô, com treino 70% / teste 30%. Começa do zero: remove os setups antigos e adiciona logo ao robô cada setup com lucro acima de 6% no teste — vários timeframes por ativo. Continua no servidor mesmo que feches a app ou o servidor reinicie.
+        Testa todas as estratégias e plugins em todos os timeframes (1m a 1D) de cada ativo do robô, com treino 70% / teste 30%. Começa do zero: remove os setups antigos e adiciona logo ao robô cada setup com lucro acima de 10% ou acerto acima de 55% com lucro mínimo de 6% no teste (o mais lucrativo com menor drawdown) — vários timeframes por ativo. Continua no servidor mesmo que feches a app ou o servidor reinicie.
       </Text>
       {running && j && (
         <View style={{ gap: 4 }}>
@@ -111,7 +111,7 @@ export function OptimizeAll({ onDone }: { onDone: () => void }) {
           </Pressable>
         );
       })}
-      {done && rows.length === 0 && <Text style={styles.muted}>Nenhum setup teve lucro acima de 6% no período de teste.</Text>}
+      {done && rows.length === 0 && <Text style={styles.muted}>Nenhum setup teve lucro acima de 10% ou acerto acima de 55% com lucro mínimo de 6% no período de teste.</Text>}
       {done && rows.length > 0 && <Text style={styles.muted}>Todos os setups acima foram adicionados ao robô. Desmarca para remover.</Text>}
       <Button
         label={running ? "A otimizar…" : done ? "Otimizar de novo" : "Otimizar tudo"}
