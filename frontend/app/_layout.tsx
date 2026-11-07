@@ -30,6 +30,7 @@ function Gate() {
         <Stack.Screen name="chart/[symbol]" />
         <Stack.Screen name="plugins" options={{ presentation: "modal" }} />
         <Stack.Screen name="bot" />
+        <Stack.Screen name="bot2" />
         <Stack.Screen name="signals" />
         <Stack.Screen name="tools" />
         <Stack.Screen name="patterns" />

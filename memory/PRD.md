@@ -106,3 +106,5 @@ Follow-ups: "Faz trades automaticamente", "Está com resultados negativos", "Bai
 - MetaTrader: entry skipped if real risk (lot x stop) > 1.5% of MT equity (MT_MAX_RISK_PCT).
 - Tested: iteration_12.
 - Rule changed again (Jun 2026): win rate > 55% always (+>=6% profit), or > 25% profit with any win rate. Cleanup: 55 setups kept, 34 dropped, 12 pairs disabled.
+- Simular → "Vários pares" market scanner (POST /api/scan, GET /api/scan/current; db.scan_jobs) showing best qualifying setup per pair/TF sorted by return/DD; tick & add to Robô 2 (POST /api/bot2/add).
+- Robô 2 (/bot2 screen; db.bots2; positions source "bot2"; logs scope "bot2"), paper by default. Main bot field mt_bot (main|bot2) chooses which bot sends orders to MetaTrader. Tested iteration_13.

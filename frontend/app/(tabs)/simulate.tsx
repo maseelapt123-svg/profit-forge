@@ -5,6 +5,7 @@ import { ActivityIndicator, Pressable, ScrollView, Switch, Text, View } from "re
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api, fmt, money } from "@/src/api";
+import { MarketScan } from "@/src/components/market-scan";
 import { NegOptimize } from "@/src/components/neg-optimize";
 import { useToast } from "@/src/components/toast";
 import { Button, ChipRow, haptic } from "@/src/components/ui";
@@ -46,6 +47,7 @@ export default function Simulate() {
   const [useAi, setUseAi] = useState(true);
   const [sel, setSel] = useState<string[] | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
+  const [mode, setMode] = useState<"bot" | "scan">("bot");
 
   const items = useMemo<Item[]>(() => {
     const b = bot.data?.bot;
@@ -131,9 +133,17 @@ export default function Simulate() {
   return (
     <View style={[styles.root, { paddingTop: insets.top }]} testID="simulate-screen">
       <View style={styles.header}>
-        <Text style={styles.title}>Simulação mensal</Text>
-        <Text style={styles.subtitle}>Calcula com juros compostos quanto as estratégias teriam feito no período, com e sem filtro IA</Text>
+        <Text style={styles.title}>Simulação</Text>
+        <Text style={styles.subtitle}>
+          {mode === "bot" ? "Calcula com juros compostos quanto as estratégias teriam feito no período, com e sem filtro IA" : "Procura os pares e estratégias mais lucrativos de um mercado e envia-os para o Robô 2"}
+        </Text>
       </View>
+      <ChipRow options={[{ value: "bot", label: "Robô principal" }, { value: "scan", label: "Vários pares" }]} value={mode} onChange={setMode} testID="sim-mode" />
+      {mode === "scan" ? (
+        <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}>
+          <MarketScan />
+        </ScrollView>
+      ) : (
       <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 32, gap: 8 }}>
         <View style={styles.steps}>
           <Num label="Capital" value={capital} step={capital <= 100 ? 10 : capital <= 1000 ? 100 : 1000} min={10} max={1000000} onChange={setCapital} testID="sim-capital" prefix="$" />
@@ -222,6 +232,7 @@ export default function Simulate() {
         )}
         {j?.error && <Text style={[styles.muted, { paddingHorizontal: 16, color: colors.error }]}>{j.error}</Text>}
       </ScrollView>
+      )}
     </View>
   );
 }

@@ -9,6 +9,7 @@ import math
 import time
 import uuid
 import asyncio
+import contextvars
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field
@@ -930,7 +931,7 @@ BOT_DEFAULT = {"enabled": False, "symbols": ["BTC-USD", "ETH-USD", "EURUSD=X"], 
                "risk_pct": 1.0, "sl_atr": 1.5, "rr": 2.0, "max_positions": 30, "ai_filter": False,
                "conf_votes": 2, "conf_score": 55.0, "c12_enabled": False, "c12_min": 10, "c12_max_positions": 30, "c12_tf": "1h",
                "c20_enabled": False, "c20_min": 16, "c20_max_positions": 30, "c20_tf": "1h", "c20_rr": 5.0, "c20_ptp_r": 2.0,
-               "ptp_enabled": True, "breakeven_enabled": True, "ptp_pct": 50.0, "ptp_r": 1.0, "c20_pairs": [], "c12_pairs": [], "c_min_return": 6.0, "weekly_reopt": True, "live_mode": "paper", "live_max_usd": 50.0,
+               "ptp_enabled": True, "breakeven_enabled": True, "ptp_pct": 50.0, "ptp_r": 1.0, "c20_pairs": [], "c12_pairs": [], "c_min_return": 6.0, "weekly_reopt": True, "live_mode": "paper", "mt_bot": "main", "live_max_usd": 50.0,
                "mt_max_lots": 0.1, "mt_suffix": ""}
 
 
@@ -975,6 +976,7 @@ class BotIn(BaseModel):
     c_min_return: float = Field(6.0, ge=0, le=50)
     weekly_reopt: bool = True
     live_mode: str = Field("paper", pattern="^(paper|binance|metatrader)$")
+    mt_bot: str = Field("main", pattern="^(main|bot2)$")  # which bot sends orders to MetaTrader
     live_max_usd: float = Field(50, ge=5, le=100000)
     mt_max_lots: float = Field(0.1, ge=0.01, le=50)
     mt_suffix: str = Field("", max_length=8)
@@ -990,9 +992,37 @@ async def get_bot(user_id: str) -> dict:
     return {**BOT_DEFAULT, **(doc or {}), "user_id": user_id}
 
 
+_log_scope: contextvars.ContextVar = contextvars.ContextVar("log_scope", default=None)  # "bot2" while Robô 2 runs
+
+
 async def bot_log(user_id: str, kind: str, msg: str, symbol: Optional[str] = None):
-    await db.bot_logs.insert_one({"log_id": uuid.uuid4().hex[:16], "user_id": user_id, "kind": kind, "msg": msg,
-                                  "symbol": symbol, "created_at": datetime.now(timezone.utc).isoformat()})
+    doc = {"log_id": uuid.uuid4().hex[:16], "user_id": user_id, "kind": kind, "msg": msg,
+           "symbol": symbol, "created_at": datetime.now(timezone.utc).isoformat()}
+    if _log_scope.get():
+        doc["scope"] = _log_scope.get()
+    await db.bot_logs.insert_one(doc)
+
+
+BOT2_KEYS = ("enabled", "risk_pct", "setups", "last_bar", "last_run")
+
+
+async def get_bot2(uid: str, main: Optional[dict] = None) -> dict:
+    """Robô 2: own setups, risk and state; execution settings (MT account, lots, suffix, partial TP) come from the main bot."""
+    main = main or await get_bot(uid)
+    doc = await db.bots2.find_one({"user_id": uid}, {"_id": 0}) or {}
+    return {**main, "symbols": [], "fixes": {}, "c12_enabled": False, "c20_enabled": False, "ai_filter": False,
+            "enabled": False, "risk_pct": 1.0, "setups": [], "last_bar": {}, "last_run": None,
+            **{k: doc[k] for k in BOT2_KEYS if k in doc}, "user_id": uid}
+
+
+async def run_bot2_cycle(uid: str) -> int:
+    lock = _bot_locks.setdefault(uid, asyncio.Lock())  # same paper account as the main bot
+    async with lock:
+        tok = _log_scope.set("bot2")
+        try:
+            return await _run_bot_cycle({"user_id": uid}, bot2=True)
+        finally:
+            _log_scope.reset(tok)
 
 
 async def check_exits(user_id: str):
@@ -1036,8 +1066,12 @@ async def check_exits(user_id: str):
             # simulated resting stop/limit order: fill at the order level, not at the (later) polled price
             fill = p["stop_loss"] if reason == "stop_loss" else p["take_profit"]
             pnl = await close_position(p, fill, reason)
-            if p.get("source") == "bot":
-                await bot_log(user_id, "close", f"{display(p['symbol'])} fechado por {'stop' if reason == 'stop_loss' else 'alvo'}: {pnl:+.2f} $", p["symbol"])
+            if p.get("source") in ("bot", "bot2"):
+                tok = _log_scope.set("bot2" if p["source"] == "bot2" else None)
+                try:
+                    await bot_log(user_id, "close", f"{display(p['symbol'])} fechado por {'stop' if reason == 'stop_loss' else 'alvo'}: {pnl:+.2f} $", p["symbol"])
+                finally:
+                    _log_scope.reset(tok)
 
 
 _bot_locks: Dict[str, asyncio.Lock] = {}
@@ -1913,14 +1947,21 @@ async def bot_optimize_all_status(job_id: str, request: Request):
     return {k: v for k, v in job.items() if k not in ("user_id", "done_keys", "symbols")}
 
 
-async def _run_bot_cycle(bot: dict) -> int:
-    """One pass: evaluate each symbol's last CLOSED bar and open/close bot positions. Returns trades opened."""
+async def _run_bot_cycle(bot: dict, bot2: bool = False) -> int:
+    """One pass: evaluate each symbol's last CLOSED bar and open/close bot positions. Returns trades opened.
+    bot2=True runs Robô 2 (only its own setups, positions with source "bot2")."""
     uid = bot["user_id"]
-    bot = await get_bot(uid)  # fresh state (last_bar) under the lock
-    lu = bot.get("live_until")
-    if bot.get("live_mode") == "metatrader" and lu and lu < datetime.now(timezone.utc).isoformat():
+    main = await get_bot(uid)  # fresh state (last_bar) under the lock
+    coll, src = (db.bots2, "bot2") if bot2 else (db.bots, "bot")
+    bot = await get_bot2(uid, main) if bot2 else main
+    lu = main.get("live_until")
+    if main.get("live_mode") == "metatrader" and lu and lu < datetime.now(timezone.utc).isoformat():
         await db.bots.update_one({"user_id": uid}, {"$set": {"live_mode": "paper"}, "$unset": {"live_until": ""}})
         await bot_log(uid, "info", "Período de teste MetaTrader terminado — robô voltou à conta simulada (as posições abertas mantêm o stop/alvo)")
+        main["live_mode"] = bot["live_mode"] = "paper"
+    # only the bot chosen in "Robô no MetaTrader" sends orders to MT; Robô 2 never uses Binance
+    if (bot2 and bot.get("live_mode") != "metatrader") or \
+            (bot.get("live_mode") == "metatrader" and main.get("mt_bot", "main") != ("bot2" if bot2 else "main")):
         bot["live_mode"] = "paper"
     await check_exits(uid)
     plugins = await user_plugins(uid)
@@ -1965,9 +2006,9 @@ async def _run_bot_cycle(bot: dict) -> int:
         state_key = f"last_bar.{skey}"
         if bot.get("last_bar", {}).get(skey) == bar_ts:
             continue
-        await db.bots.update_one({"user_id": uid}, {"$set": {state_key: bar_ts}}, upsert=True)
+        await coll.update_one({"user_id": uid}, {"$set": {state_key: bar_ts}}, upsert=True)
         side = "BUY" if s == 1 else "SELL"
-        existing = await db.positions.find_one({"user_id": uid, "status": "open", "source": "bot",
+        existing = await db.positions.find_one({"user_id": uid, "status": "open", "source": src,
                                                 "$or": [{"setup": key}, {"symbol": sym, "setup": {"$exists": False}}]}, {"_id": 0})
         price = float(df["close"].iloc[-1])
         if existing:
@@ -2007,7 +2048,7 @@ async def _run_bot_cycle(bot: dict) -> int:
             ai_ok = {"confidence": v["confidence"], "reason": v["reason"]}
         pos = {"position_id": uuid.uuid4().hex[:16], "user_id": uid, "symbol": sym, "side": side, "qty": float(qty),
                "entry": price, "stop_loss": price - d * stop, "take_profit": price + d * stop * cfg["rr"],
-               "status": "open", "source": "bot", "setup": key, "tf": cfg["tf"], "stop_dist": float(stop),
+               "status": "open", "source": src, "setup": key, "tf": cfg["tf"], "stop_dist": float(stop),
                "ctx": {"hour": datetime.now(timezone.utc).hour,
                        "htf_aligned": htf_ok}, "opened_at": datetime.now(timezone.utc).isoformat()}
         if ai_ok:
@@ -2022,8 +2063,9 @@ async def _run_bot_cycle(bot: dict) -> int:
     for kind in STREAMS:
         if bot.get(f"{kind}_enabled"):
             opened += await _run_stream(uid, bot, kind)
-    await db.bots.update_one({"user_id": uid}, {"$set": {"last_run": datetime.now(timezone.utc).isoformat()}}, upsert=True)
-    await bot_auto_fix(uid)
+    await coll.update_one({"user_id": uid}, {"$set": {"last_run": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    if not bot2:
+        await bot_auto_fix(uid)
     return opened
 
 
@@ -2036,13 +2078,19 @@ async def bot_loop():
                     await run_bot_cycle({**BOT_DEFAULT, **b})
                 except Exception:
                     logger.exception("bot cycle failed for %s", b.get("user_id"))
+            bots2 = await db.bots2.find({"enabled": True}, {"_id": 0, "user_id": 1}).to_list(500)
+            for b in bots2:
+                try:
+                    await run_bot2_cycle(b["user_id"])
+                except Exception:
+                    logger.exception("bot2 cycle failed for %s", b["user_id"])
             # MT orphan clean-up for every user with an MT account (also after the bot left MetaTrader mode)
             for a in await db.live_accounts.find({"kind": "mt"}, {"_id": 0, "user_id": 1}).to_list(100):
                 try:
                     await mt_reconcile(a["user_id"])
                 except Exception:
                     logger.exception("mt reconcile failed for %s", a["user_id"])
-            bot_users = {b["user_id"] for b in bots}
+            bot_users = {b["user_id"] for b in bots + bots2}
             await maybe_weekly_reopt(await db.bots.find({}, {"_id": 0}).to_list(500))
             for uid in await db.positions.distinct("user_id", {"status": "open"}):
                 if uid not in bot_users:
@@ -2058,7 +2106,7 @@ async def bot_get(request: Request):
     bot = await get_bot(u["user_id"])
     bot.pop("last_bar", None)
     bot.pop("fix_ts", None)
-    logs = await db.bot_logs.find({"user_id": u["user_id"], "scope": {"$ne": "hfx"}}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    logs = await db.bot_logs.find({"user_id": u["user_id"], "scope": {"$nin": ["hfx", "bot2"]}}, {"_id": 0}).sort("created_at", -1).to_list(50)
     closed = await db.positions.find({"user_id": u["user_id"], "status": "closed", "source": "bot"}, {"_id": 0, "pnl": 1}).to_list(1000)
     n_open = await db.positions.count_documents({"user_id": u["user_id"], "status": "open", "source": "bot"})
     stats = {"trades": len(closed), "pnl": sum(p["pnl"] for p in closed), "wins": sum(1 for p in closed if p["pnl"] > 0), "open": n_open}
@@ -2101,6 +2149,157 @@ async def bot_put(body: BotIn, request: Request):
     if body.enabled != prev["enabled"]:
         await bot_log(u["user_id"], "status", "Robô ativado" if body.enabled else "Robô parado")
     return {"ok": True}
+
+
+# ---------- Market scan (Simular → Vários pares) + Robô 2 ----------
+SCAN_TFS = ("15m", "1h", "4h", "1d")
+
+
+class ScanIn(BaseModel):
+    category: str = Field(..., pattern="^(forex|crypto|indices|stocks)$")
+    tfs: List[str] = ["1h", "4h"]
+
+
+async def _save_scan(job: dict) -> None:
+    await db.scan_jobs.update_one({"job_id": job["job_id"]}, {"$set": dict(job)}, upsert=True)
+
+
+async def _run_scan(job: dict) -> None:
+    """Walk-forward optimise every pair of a market on the chosen TFs; keep the best qualifying setup of each."""
+    plugins = await user_plugins(job["user_id"])
+    try:
+        for sym in job["symbols"]:
+            fee = FEES[ASSET_INFO[sym]["category"]]
+            for tf in job["tfs"]:
+                job["current"] = f"{display(sym)} {tf.upper()}"
+                await _save_scan(job)
+                b = None
+                try:
+                    df = await get_df(sym, tf, long=True)
+                    if len(df) >= 600:
+                        htf = await get_htf(sym, tf)
+                        b = (await asyncio.to_thread(optimize, df, plugins, fee, 1.0, 10000.0, 0.7, htf))["best"]
+                except HTTPException:
+                    pass
+                except Exception:
+                    logger.exception("scan %s %s", sym, tf)
+                if b:  # optimize() only returns setups passing the rule
+                    job["results"].append({
+                        "symbol": sym, "display": display(sym), "tf": tf, "strategy": b["strategy"], "sl_atr": b["sl_atr"],
+                        "rr": b["rr"], "trend_filter": b["trend_filter"], "mtf": b["mtf"],
+                        "test": round(b["test"]["return_pct"], 2), "wr": round(b["test"]["win_rate"], 1),
+                        "dd": round(b["test"]["max_drawdown"], 2), "trades": b["test"]["total_trades"],
+                        "train": round(b["train"]["return_pct"], 2), "score": round(b["score"], 3)})
+                    job["results"].sort(key=lambda x: -x["score"])  # most profit for the least drawdown
+                job["step"] += 1
+                await _save_scan(job)
+    except Exception:
+        logger.exception("scan job failed")
+        job["error"] = "A procura parou por um erro — tenta de novo."
+    finally:
+        job["status"], job["current"] = "done", None
+        await _save_scan(job)
+
+
+@api.post("/scan")
+async def scan_start(body: ScanIn, request: Request):
+    u = await get_user(request)
+    tfs = [t for t in SCAN_TFS if t in body.tfs]
+    if not tfs:
+        raise HTTPException(400, "Escolhe pelo menos um timeframe")
+    if await db.scan_jobs.find_one({"user_id": u["user_id"], "status": "running"}):
+        raise HTTPException(429, "Já tens uma procura em curso")
+    syms = [s for s, i in ASSET_INFO.items() if i["category"] == body.category]
+    job = {"job_id": uuid.uuid4().hex[:12], "user_id": u["user_id"], "category": body.category, "tfs": tfs, "symbols": syms,
+           "status": "running", "current": None, "step": 0, "total": len(syms) * len(tfs), "results": [], "started": time.time()}
+    await _save_scan(job)
+    asyncio.create_task(_run_scan(job))
+    return {"job_id": job["job_id"]}
+
+
+@api.get("/scan/current")
+async def scan_current(request: Request):
+    u = await get_user(request)
+    job = await db.scan_jobs.find_one({"user_id": u["user_id"]}, {"_id": 0}, sort=[("started", -1)])
+    return {"job": job}
+
+
+class Bot2In(BaseModel):
+    enabled: bool = False
+    risk_pct: float = Field(1.0, ge=0.1, le=5)
+    setups: List[BotSetup] = []
+
+
+class Bot2AddIn(BaseModel):
+    job_id: str
+    keys: List[str]  # "SYMBOL|tf"
+
+
+@api.get("/bot2")
+async def bot2_get(request: Request):
+    uid = (await get_user(request))["user_id"]
+    main = await get_bot(uid)
+    b = await get_bot2(uid, main)
+    logs = await db.bot_logs.find({"user_id": uid, "scope": "bot2"}, {"_id": 0}).sort("created_at", -1).to_list(40)
+    closed = await db.positions.find({"user_id": uid, "status": "closed", "source": "bot2"}, {"_id": 0, "pnl": 1}).to_list(2000)
+    open_pos = await db.positions.find({"user_id": uid, "status": "open", "source": "bot2"},
+                                       {"_id": 0, "position_id": 1, "symbol": 1, "side": 1, "entry": 1, "tf": 1, "opened_at": 1}).to_list(200)
+    stats = {"trades": len(closed), "pnl": sum(p["pnl"] for p in closed), "wins": sum(1 for p in closed if p["pnl"] > 0), "open": len(open_pos)}
+    return {"bot": {k: b[k] for k in ("enabled", "risk_pct", "setups", "last_run")},
+            "mt": main.get("live_mode") == "metatrader" and main.get("mt_bot", "main") == "bot2",
+            "logs": logs, "stats": stats, "positions": [{**p, "display": display(p["symbol"])} for p in open_pos]}
+
+
+@api.put("/bot2")
+async def bot2_put(body: Bot2In, request: Request):
+    uid = (await get_user(request))["user_id"]
+    seen = set()
+    for st in body.setups:
+        if st.symbol not in ASSET_INFO or st.tf not in TIMEFRAMES or st.strategy not in STRATEGIES or (st.symbol, st.tf) in seen:
+            raise HTTPException(400, f"Setup inválido para {st.symbol} {st.tf}")
+        seen.add((st.symbol, st.tf))
+    if body.enabled and not body.setups:
+        raise HTTPException(400, "Adiciona pelo menos um setup ao Robô 2")
+    prev = await get_bot2(uid)
+    await db.bots2.update_one({"user_id": uid}, {"$set": {"enabled": body.enabled, "risk_pct": body.risk_pct,
+                                                          "setups": [s.model_dump() for s in body.setups]}}, upsert=True)
+    if body.enabled != prev["enabled"]:
+        tok = _log_scope.set("bot2")
+        try:
+            await bot_log(uid, "status", "Robô 2 ativado" if body.enabled else "Robô 2 parado")
+        finally:
+            _log_scope.reset(tok)
+    return {"ok": True}
+
+
+@api.post("/bot2/add")
+async def bot2_add(body: Bot2AddIn, request: Request):
+    uid = (await get_user(request))["user_id"]
+    job = await db.scan_jobs.find_one({"job_id": body.job_id, "user_id": uid}, {"_id": 0})
+    if not job:
+        raise HTTPException(404, "Procura não encontrada")
+    keys = set(body.keys)
+    new = [{k: r[k] for k in ("symbol", "tf", "strategy", "sl_atr", "rr", "trend_filter", "mtf", "test", "wr")}
+           for r in job["results"] if f"{r['symbol']}|{r['tf']}" in keys]
+    if not new:
+        raise HTTPException(400, "Escolhe pelo menos um resultado")
+    b = await get_bot2(uid)
+    pairs = {(x["symbol"], x["tf"]) for x in new}
+    setups = [x for x in b["setups"] if (x["symbol"], x["tf"]) not in pairs] + new
+    await db.bots2.update_one({"user_id": uid}, {"$set": {"setups": setups}}, upsert=True)
+    tok = _log_scope.set("bot2")
+    try:
+        await bot_log(uid, "fix", f"{len(new)} setup(s) adicionados da procura — {len(setups)} no Robô 2")
+    finally:
+        _log_scope.reset(tok)
+    return {"added": len(new), "total": len(setups)}
+
+
+@api.post("/bot2/run")
+async def bot2_run(request: Request):
+    uid = (await get_user(request))["user_id"]
+    return {"opened": await run_bot2_cycle(uid)}
+
 
 
 @api.get("/bot/analysis")
@@ -2236,7 +2435,7 @@ async def daily_stats(uid: str, start: datetime, end: datetime) -> dict:
 
     async def count(kind: str, hfx_scope: bool, prefix: str = "") -> int:
         q = {"user_id": uid, "kind": kind, "created_at": {"$gte": s_iso, "$lt": e_iso},
-             "scope": "hfx" if hfx_scope else {"$ne": "hfx"}}
+             "scope": "hfx" if hfx_scope else {"$nin": ["hfx", "bot2"]}}
         if prefix:
             q["msg"] = {"$regex": prefix}
         return await db.bot_logs.count_documents(q)
@@ -2837,6 +3036,9 @@ async def startup():
     await db.positions.create_index([("user_id", 1), ("status", 1)])
     await db.plugins.create_index("user_id", unique=True)
     await db.bots.create_index("user_id", unique=True)
+    await db.bots2.create_index("user_id", unique=True)
+    await db.scan_jobs.update_many({"status": "running"}, {"$set": {"status": "done", "current": None,
+                                                                    "error": "Interrompido pelo reinício do servidor — volta a correr."}})
     await db.bot_logs.create_index([("user_id", 1), ("created_at", -1)])
     asyncio.create_task(bot_loop())
     asyncio.create_task(hfx_router.loop())

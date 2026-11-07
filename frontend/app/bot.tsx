@@ -23,7 +23,7 @@ type Bot = { setups?: Setup[]; mtf: boolean; ai_filter: boolean; conf_votes: num
   c20_enabled: boolean; c20_min: number; c20_max_positions: number; c20_tf: string; c20_rr: number; c20_ptp_r: number;
   c20_pairs?: { symbol: string; tf: string; rr: number; min: number; enabled: boolean; test: number | null }[];
   c12_pairs?: { symbol: string; tf: string; rr: number; min: number; enabled: boolean; test: number | null }[];
-  ptp_enabled: boolean; breakeven_enabled?: boolean; ptp_pct: number; ptp_r: number; live_mode: "paper" | "binance" | "metatrader"; live_max_usd: number; live_until?: string; c_min_return?: number; weekly_reopt?: boolean; last_reopt?: string;
+  ptp_enabled: boolean; breakeven_enabled?: boolean; ptp_pct: number; ptp_r: number; live_mode: "paper" | "binance" | "metatrader"; mt_bot?: "main" | "bot2"; live_max_usd: number; live_until?: string; c_min_return?: number; weekly_reopt?: boolean; last_reopt?: string;
   mt_max_lots: number; mt_suffix: string; trend_filter: boolean; enabled: boolean; symbols: string[]; tf: string; strategy: string; risk_pct: number; sl_atr: number; rr: number; max_positions: number; last_run?: string };
 type Resp = {
   bot: Bot; logs: { log_id: string; kind: string; msg: string; created_at: string }[];
@@ -269,6 +269,18 @@ export default function BotScreen() {
               {q.data?.bot?.live_until && (
                 <Text style={[styles.note, { paddingHorizontal: 16 }]} testID="bot-live-until">
                   Teste em conta MetaTrader até {new Date(q.data.bot.live_until).toLocaleDateString("pt-PT")} — depois volta sozinho à conta simulada.
+                </Text>
+              )}
+              <Text style={[styles.note, { paddingHorizontal: 16, marginTop: 4, marginBottom: 4 }]}>Que robô envia ordens para o MetaTrader</Text>
+              <ChipRow
+                options={[{ value: "main", label: "Robô principal" }, { value: "bot2", label: "Robô 2" }]}
+                value={cfg.mt_bot ?? "main"}
+                onChange={(v) => upd({ mt_bot: v as Bot["mt_bot"] })}
+                testID="bot-mt-bot"
+              />
+              {cfg.mt_bot === "bot2" && (
+                <Text style={[styles.note, { paddingHorizontal: 16 }]} testID="bot-mt-bot-note">
+                  O robô principal fica na conta simulada; só o Robô 2 abre trades no MetaTrader.
                 </Text>
               )}
               <MtAccount

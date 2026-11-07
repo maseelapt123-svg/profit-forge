@@ -1,0 +1,48 @@
+{
+  "summary": "Tested Market Scan (Simular → Vários pares), the Robô 2 API and screen, log separation, and the mt_bot selector. Backend: 16/16 pytest pass (the add/replace test was rerun on its own after the parallel run skipped it). Ran a real stocks/1d scan in ~20s; it found 4 results, all passing the rule and sorted by score. Frontend: mode chips, market/TF chips, the disabled state with no TFs, progress text, row toggle, select-all/clear, add-to-Robô 2 toast, the bot2 screen (risk steppers, remove, save, the enable-with-no-setups error toast, run cycle) and the bot screen MT chips all work. Code review of _run_bot_cycle(bot2) found the MT routing and paper fallback correct, with one gap in how the trial expiry is enforced. No real MT orders were placed. The user's state was restored: main bot paper/main/disabled, Robô 2 disabled, risk 1.0, setups TSLA 1d and MSFT 1d.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "_run_bot_cycle(bot2=True) / MT trial expiry", "issue": "The live_until expiry (1-week MT trial, then back to paper) is only checked when not bot2 (server.py:1954), and bot_loop only runs the main cycle for enabled main bots. So when mt_bot=='bot2' and the main bot is disabled, live_mode stays 'metatrader' and Robô 2 keeps sending real MT orders after the trial ends. Fix: run the expiry check for bot2 too (it updates db.bots), or check it in bot_loop for every bot with live_mode metatrader."},
+      {"endpoint": "check_exits", "issue": "Stop/target closes are only logged when source=='bot' (server.py:1069). Robô 2 (source 'bot2') closes by SL/TP write no log, so the Robô 2 Atividade list never shows them. The log should also be written with scope 'bot2' so it does not leak into the main logs."},
+      {"endpoint": "daily summary count() (server.py:2434)", "issue": "Uses scope {$ne:'hfx'}, so Robô 2 logs (scope 'bot2') are counted in the main bot's daily summary numbers. Use {$nin:['hfx','bot2']}."},
+      {"endpoint": "POST /api/scan", "issue": "The 429 check (find running job, then insert) is not atomic, so two quick concurrent POSTs can start two scans. Low risk because the UI disables the button."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "bot2.tsx back button", "issue": "router.back() does nothing when /bot2 is opened directly (deep link / web refresh): there is no history, so the user is stuck. Add a fallback: router.canGoBack() ? router.back() : router.replace('/(tabs)/simulate'). Back works fine when coming from Simular.", "testID": "bot2-back-button", "priority": "LOW"},
+      {"component": "bot2.tsx setups sync", "issue": "Local cfg only re-syncs when the server's setups.length changes (line 38-41). When a scan add replaces an existing symbol|tf (same length), the open screen keeps the old params, and 'Guardar' overwrites the new setup with the stale one.", "testID": "bot2-save", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Simular → Vários pares", "issues": [
+        "The 'Adicionar ao Robô 2 (N)' label wraps onto 2 lines in its flex:1.4 button at 390px width.",
+        "The result row subtitle (styles.note) has paddingHorizontal:16 inside the row, so it is indented 16px from the title. Use a separate style without horizontal padding inside rows (same in bot2 setup rows).",
+        "The market/TF chips reset to Forex/1H+4H on reload while the shown results belong to the last job (e.g. Ações 1D). Consider setting cat/tfs from the job."
+      ]},
+      {"screen": "Bot / Simular chips", "issues": ["ChipRow chips are 36px tall, below the 44px touch target (bot-mt-bot-*, scan-cat-*, scan-tfs-*)."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iter20_scan_bot2.py", "/app/test_reports/pytest/pytest_iter20.xml"],
+  "action_items": [
+    "Apply the MT trial expiry (live_until) when Robô 2 is the MT bot, even if the main bot is disabled.",
+    "Log Robô 2 SL/TP closes in check_exits with scope 'bot2'.",
+    "Exclude scope 'bot2' from the main bot counts in the daily summary.",
+    "bot2.tsx: add a fallback for the back button and re-sync setups when their content changes (not just the length).",
+    "Minor UI: wrapped scan-add label, subtitle indentation in rows, 36px chips."
+  ],
+  "critical_code_review_comments": [
+    "MT routing logic (server.py:1959-1961) is correct. Robô 2 goes to MT only when live_mode=='metatrader' and mt_bot=='bot2'. The main bot falls back to paper when mt_bot=='bot2'. Robô 2 never uses Binance.",
+    "Robô 2 positions use source 'bot2', and state/last_bar/last_run go to db.bots2. It shares the paper account and per-user lock with the main bot.",
+    "Stale 'running' scan jobs are reset on startup (server.py:3036). Good.",
+    "server.py is 3050+ lines and should be split (scan/bot2 into their own module)."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter20_scan_bot2.py"],
+  "success_rate": {"backend": "100%", "frontend": "100% (core flows)"},
+  "seed_data_creation": "Ran new stocks/1d scan jobs (latest job id 0071db864fc0). The add tests re-added TSLA/MSFT 1d to Robô 2 (same values) and wrote 'setup(s) adicionados' bot2 logs. Robô 2 risk was restored to 1.0 and enabled=false.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Use test_iter20_scan_bot2.py. Run it with -n0 (pytest.ini uses xdist, and in parallel test_add_and_replace can see an empty running job and skip). The stocks/1d scan takes ~20s. Never set live_mode metatrader on user_test1. On /bot, wait ~3s after load before tapping the bot-exec-mode chips, or the tap is lost to the cfg init."
+}
