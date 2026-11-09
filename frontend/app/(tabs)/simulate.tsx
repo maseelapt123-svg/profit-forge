@@ -1,5 +1,6 @@
 import { Ionicons } from "@react-native-vector-icons/ionicons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Switch, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -47,10 +48,21 @@ export default function Simulate() {
   const [useAi, setUseAi] = useState(true);
   const [sel, setSel] = useState<string[] | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
-  const [mode, setMode] = useState<"bot" | "scan">("bot");
+  const params = useLocalSearchParams<{ mode?: string }>();
+  const [mode, setMode] = useState<"bot" | "b2" | "scan">(params.mode === "b2" ? "b2" : "bot");
+  useEffect(() => {
+    if (params.mode === "b2") setMode("b2");
+  }, [params.mode]);
+  const bot2 = useQuery({ queryKey: ["bot2"], queryFn: () => api<{ bot: { setups: BotCfg["setups"] } }>("/bot2"), enabled: mode === "b2" });
+  useEffect(() => {  // each mode has its own selection and result
+    setSel(null);
+    setJobId(null);
+  }, [mode]);
 
   const items = useMemo<Item[]>(() => {
     const b = bot.data?.bot;
+    if (mode === "b2")
+      return (bot2.data?.bot.setups ?? []).map((s) => ({ id: `setup|${s.symbol}|${s.tf}|${s.strategy}`, kind: "setup" as const, ...s, min: 10, title: `${disp(s.symbol)} ${s.tf.toUpperCase()} · ${stratLabel(s.strategy)}` }));
     if (!b) return [];
     const out: Item[] = [];
     const setups = b.setups?.length
@@ -70,13 +82,13 @@ export default function Simulate() {
         out.push({ id: `c20|${s}`, kind: "c20", symbol: s, tf: c20.tf, strategy: "confirm20", sl_atr: b.sl_atr, rr: c20.rr, trend_filter: false, mtf: true, min: c20.min, title: `${disp(s)} ${c20.tf.toUpperCase()} · Sniper 20 (1:${c20.rr}, ${c20.min}/20)` });
     });
     return out;
-  }, [bot.data]);
+  }, [bot.data, bot2.data, mode]);
   useEffect(() => {
-    if (bot.data && sel === null) {
+    if (bot.data && sel === null && (mode !== "b2" || bot2.data)) {
       setSel(items.filter((i) => i.kind === "setup").map((i) => i.id));
       setPartial(!!bot.data.bot.ptp_enabled);
     }
-  }, [bot.data, items, sel]);
+  }, [bot.data, bot2.data, items, sel, mode]);
   const chosen = items.filter((i) => sel?.includes(i.id));
 
   const start = useMutation({
@@ -104,16 +116,17 @@ export default function Simulate() {
   const removeNeg = useMutation({
     mutationFn: async () => {
       const neg = new Set(negIds);
-      const cur = await api<{ bot: BotCfg }>("/bot");
+      const path = mode === "b2" ? "/bot2" : "/bot";
+      const cur = await api<{ bot: BotCfg }>(path);
       const setups = (cur.bot.setups ?? []).filter((s) => !neg.has(`setup|${s.symbol}|${s.tf}|${s.strategy}`));
       const removed = (cur.bot.setups ?? []).length - setups.length;
-      if (removed) await api("/bot", { method: "PUT", body: { ...cur.bot, setups } });
+      if (removed) await api(path, { method: "PUT", body: { ...cur.bot, setups } });
       return { removed, neg };
     },
     onSuccess: ({ removed, neg }) => {
       haptic("medium");
-      toast(`${removed} setup(s) negativo(s) retirado(s) do robô`, "success");
-      qc.invalidateQueries({ queryKey: ["bot"] });
+      toast(`${removed} setup(s) negativo(s) retirado(s) do ${mode === "b2" ? "Robô 2" : "robô"}`, "success");
+      qc.invalidateQueries({ queryKey: [mode === "b2" ? "bot2" : "bot"] });
       setSel((s) => (s ?? []).filter((x) => !neg.has(x)));
       setRerun(true);
     },
@@ -135,10 +148,10 @@ export default function Simulate() {
       <View style={styles.header}>
         <Text style={styles.title}>Simulação</Text>
         <Text style={styles.subtitle}>
-          {mode === "bot" ? "Calcula com juros compostos quanto as estratégias teriam feito no período, com e sem filtro IA" : "Procura os pares e estratégias mais lucrativos de um mercado e envia-os para o Robô 2"}
+          {mode === "scan" ? "Procura os pares e estratégias mais lucrativos de um mercado e envia-os para o Robô 2" : "Calcula com juros compostos quanto as estratégias teriam feito no período, com e sem filtro IA"}
         </Text>
       </View>
-      <ChipRow options={[{ value: "bot", label: "Robô principal" }, { value: "scan", label: "Vários pares" }]} value={mode} onChange={setMode} testID="sim-mode" />
+      <ChipRow options={[{ value: "bot", label: "Robô principal" }, { value: "b2", label: "Robô 2" }, { value: "scan", label: "Vários pares" }]} value={mode} onChange={setMode} testID="sim-mode" />
       {mode === "scan" ? (
         <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}>
           <MarketScan />
@@ -166,14 +179,18 @@ export default function Simulate() {
           <Switch testID="sim-ptp-switch" value={partial} onValueChange={setPartial} trackColor={{ true: colors.success, false: colors.surfaceTertiary }} thumbColor={colors.onBrandPrimary} />
         </View>
 
-        {!bot.data ? (
+        {!bot.data || (mode === "b2" && !bot2.data) ? (
           <ActivityIndicator color={colors.brandPrimary} style={{ marginTop: 16 }} />
+        ) : mode === "b2" && !items.length ? (
+          <Text style={[styles.muted, { paddingHorizontal: 16 }]} testID="sim-b2-empty">
+            O Robô 2 ainda não tem setups. Usa «Vários pares» para procurar os mais lucrativos e adicioná-los.
+          </Text>
         ) : (
           (["setup", "c12", "c20"] as const).map((k) =>
             group(k).length ? (
               <View key={k} style={{ gap: 6 }}>
                 <View style={styles.groupHead}>
-                  <Text style={[styles.section, { flex: 1 }]}>{k === "setup" ? "Setups do robô" : k === "c12" ? "12 Confirmações" : "Sniper 20"}</Text>
+                  <Text style={[styles.section, { flex: 1 }]}>{k === "setup" ? (mode === "b2" ? "Setups do Robô 2" : "Setups do robô") : k === "c12" ? "12 Confirmações" : "Sniper 20"}</Text>
                   <Pressable
                     testID={`sim-all-${k}`}
                     hitSlop={8}
@@ -211,7 +228,7 @@ export default function Simulate() {
           </Text>
         )}
         {j?.status === "done" && j.total && <Results j={j} />}
-        {j?.status === "done" && negIds.length > 0 && (
+        {j?.status === "done" && negIds.length > 0 && mode !== "b2" && (
           <NegOptimize
             key={jobId ?? ""}
             items={items.filter((i) => negIds.includes(i.id) && i.kind !== "c12")}

@@ -138,6 +138,7 @@ export default function Bot2Screen() {
           <View style={{ paddingHorizontal: 16, gap: 8, marginTop: 4 }}>
             <Button label="Guardar" onPress={() => save.mutate(cfg)} loading={save.isPending} testID="bot2-save" />
             <Button label="Verificar sinais agora" variant="ghost" onPress={() => runNow.mutate()} loading={runNow.isPending} disabled={!q.data.bot.setups.length} testID="bot2-run" />
+            <Button label="Simular estes setups" variant="ghost" onPress={() => router.push({ pathname: "/simulate", params: { mode: "b2" } })} disabled={!q.data.bot.setups.length} testID="bot2-simulate" />
           </View>
 
           {q.data.positions.length > 0 && <Text style={styles.section}>Posições abertas</Text>}

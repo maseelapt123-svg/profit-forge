@@ -108,3 +108,4 @@ Follow-ups: "Faz trades automaticamente", "Está com resultados negativos", "Bai
 - Rule changed again (Jun 2026): win rate > 55% always (+>=6% profit), or > 25% profit with any win rate. Cleanup: 55 setups kept, 34 dropped, 12 pairs disabled.
 - Simular → "Vários pares" market scanner (POST /api/scan, GET /api/scan/current; db.scan_jobs) showing best qualifying setup per pair/TF sorted by return/DD; tick & add to Robô 2 (POST /api/bot2/add).
 - Robô 2 (/bot2 screen; db.bots2; positions source "bot2"; logs scope "bot2"), paper by default. Main bot field mt_bot (main|bot2) chooses which bot sends orders to MetaTrader. Tested iteration_13.
+- Simular tab: 'Robô 2' mode simulates Robô 2 setups (same /api/simulate job); 'Retirar negativos' removes from Robô 2. Robô 2 screen has 'Simular estes setups' (→ /simulate?mode=b2).
