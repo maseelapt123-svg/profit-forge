@@ -8,7 +8,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api, fmt, money, pct } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { useToast } from "@/src/components/toast";
-import { Button, Center, PressableScale, Segmented, haptic } from "@/src/components/ui";
+import { Button, Center, ChipRow, PressableScale, Segmented, haptic } from "@/src/components/ui";
 import { usesNativeTabs } from "@/src/navigation";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -16,7 +16,10 @@ type Pos = {
   position_id: string; symbol: string; display: string; side: "BUY" | "SELL"; qty: number; entry: number; price?: number; exit?: number;
   pnl: number; pnl_pct?: number; decimals: number; stop_loss?: number; take_profit?: number; reason?: string; source?: string; tf?: string;
 };
-type Portfolio = { balance: number; equity: number; unrealized: number; realized: number; start_balance: number; win_rate: number; positions: Pos[]; history: Pos[] };
+type BotSum = { realized: number; trades: number; wins: number; open: number; unrealized: number };
+type Portfolio = { balance: number; equity: number; unrealized: number; realized: number; start_balance: number; win_rate: number; positions: Pos[]; history: Pos[]; bots?: { bot: BotSum; bot2: BotSum } };
+type Who = "all" | "bot" | "bot2" | "manual";
+const whoOf = (p: Pos): Who => (p.source === "bot" || p.source === "bot2" ? p.source : "manual");
 
 export default function PortfolioScreen() {
   const insets = useSafeAreaInsets();
@@ -28,9 +31,11 @@ export default function PortfolioScreen() {
   const toast = useToast();
   const qc = useQueryClient();
   const [tab, setTab] = useState<"open" | "history">("open");
+  const [who, setWho] = useState<Who>("all");
   const [confirmReset, setConfirmReset] = useState(false);
   const q = useQuery({ queryKey: ["portfolio"], queryFn: () => api<Portfolio>("/portfolio"), refetchInterval: 20000 });
   const bot = useQuery({ queryKey: ["bot"], queryFn: () => api<{ bot: { enabled: boolean } }>("/bot") });
+  const bot2 = useQuery({ queryKey: ["bot2"], queryFn: () => api<{ bot: { enabled: boolean } }>("/bot2") });
   const close = useMutation({
     mutationFn: (id: string) => api<{ pnl: number }>(`/positions/${id}/close`, { method: "POST" }),
     onSuccess: (r) => {
@@ -50,7 +55,7 @@ export default function PortfolioScreen() {
   });
   const d = q.data;
   const total = d ? d.equity - d.start_balance : 0;
-  const list = tab === "open" ? d?.positions : d?.history;
+  const list = (tab === "open" ? d?.positions : d?.history)?.filter((p) => who === "all" || whoOf(p) === who);
 
   return (
     <View style={styles.root} testID="portfolio-screen">
@@ -102,17 +107,20 @@ export default function PortfolioScreen() {
                   <Stat label="Acerto" value={`${fmt(d.win_rate, 0)}%`} />
                 </View>
               </View>
-              <PressableScale testID="open-bot-button" style={styles.botCard} onPress={() => router.push("/bot")}>
-                <View style={styles.botIcon}>
-                  <Ionicons name="hardware-chip" size={20} color={colors.brandPrimary} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.botTitle}>Robô Automático</Text>
-                  <Text style={styles.subtitle}>{bot.data?.bot.enabled ? "Ativo · a negociar sozinho" : "Parado · toca para configurar"}</Text>
-                </View>
-                <View style={[styles.dot, { backgroundColor: bot.data?.bot.enabled ? colors.success : colors.muted }]} />
-                <Ionicons name="chevron-forward" size={18} color={colors.muted} />
-              </PressableScale>
+              <BotCard
+                testID="open-bot-button"
+                title="Robô 1 · Principal"
+                enabled={!!bot.data?.bot.enabled}
+                s={d.bots?.bot}
+                onPress={() => router.push("/bot")}
+              />
+              <BotCard
+                testID="open-bot2-button"
+                title="Robô 2"
+                enabled={!!bot2.data?.bot.enabled}
+                s={d.bots?.bot2}
+                onPress={() => router.push("/bot2")}
+              />
               <PressableScale testID="open-portfolio-daily" style={styles.botCard} onPress={() => router.push({ pathname: "/results", params: { scope: "portfolio" } })}>
                 <View style={styles.botIcon}>
                   <Ionicons name="calendar" size={20} color={colors.brandPrimary} />
@@ -132,6 +140,14 @@ export default function PortfolioScreen() {
                 onChange={setTab}
                 testID="portfolio-tabs"
               />
+              <View style={{ marginHorizontal: -16 }}>
+                <ChipRow
+                  options={[{ value: "all", label: "Todos" }, { value: "bot", label: "Robô 1" }, { value: "bot2", label: "Robô 2" }, { value: "manual", label: "Manual" }]}
+                  value={who}
+                  onChange={setWho}
+                  testID="portfolio-who"
+                />
+              </View>
             </View>
           }
           renderItem={({ item }) => {
@@ -144,9 +160,9 @@ export default function PortfolioScreen() {
                     <Text style={[styles.side, { color: item.side === "BUY" ? colors.success : colors.error }]}>
                       {item.side === "BUY" ? "LONG" : "SHORT"} · {fmt(item.qty, 4)}
                     </Text>
-                    {item.source === "bot" && (
+                    {(item.source === "bot" || item.source === "bot2") && (
                       <View style={styles.demoTag}>
-                        <Text style={styles.demoText}>ROBÔ{item.tf ? ` ${item.tf.toUpperCase()}` : ""}</Text>
+                        <Text style={styles.demoText}>ROBÔ {item.source === "bot2" ? "2" : "1"}{item.tf ? ` ${item.tf.toUpperCase()}` : ""}</Text>
                       </View>
                     )}
                   </View>
@@ -177,7 +193,7 @@ export default function PortfolioScreen() {
           ListEmptyComponent={
             <View style={{ alignItems: "center", padding: 24, gap: 12 }}>
               <Text style={styles.muted}>{tab === "open" ? "Sem posições abertas." : "Ainda sem operações fechadas."}</Text>
-              {tab === "open" && <Button label="Ir para Mercados" onPress={() => router.navigate("/")} testID="go-markets-button" />}
+              {tab === "open" && who === "all" && <Button label="Ir para Mercados" onPress={() => router.navigate("/")} testID="go-markets-button" />}
             </View>
           }
           ListFooterComponent={
@@ -204,6 +220,31 @@ export default function PortfolioScreen() {
         />
       )}
     </View>
+  );
+}
+
+function BotCard({ title, enabled, s, onPress, testID }: { title: string; enabled: boolean; s?: BotSum; onPress: () => void; testID: string }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const tot = s ? s.realized + s.unrealized : 0;
+  return (
+    <PressableScale testID={testID} style={styles.botCard} onPress={onPress}>
+      <View style={styles.botIcon}>
+        <Ionicons name="hardware-chip" size={20} color={colors.brandPrimary} />
+      </View>
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text style={styles.botTitle}>{title}</Text>
+        <Text style={styles.subtitle}>{enabled ? "Ativo · a negociar sozinho" : "Parado · toca para configurar"}</Text>
+        {s && (
+          <Text style={styles.subtitle} testID={`${testID}-stats`}>
+            <Text style={{ color: tot >= 0 ? colors.success : colors.error, fontFamily: fonts.displaySemi }}>{tot >= 0 ? "+" : ""}{money(tot)}</Text>
+            {` · ${s.trades} fechados · ${s.trades ? fmt((s.wins / s.trades) * 100, 0) : 0}% acerto · ${s.open} aberta(s)`}
+          </Text>
+        )}
+      </View>
+      <View style={[styles.dot, { backgroundColor: enabled ? colors.success : colors.muted }]} />
+      <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+    </PressableScale>
   );
 }
 

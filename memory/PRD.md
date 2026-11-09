@@ -109,3 +109,4 @@ Follow-ups: "Faz trades automaticamente", "Está com resultados negativos", "Bai
 - Simular → "Vários pares" market scanner (POST /api/scan, GET /api/scan/current; db.scan_jobs) showing best qualifying setup per pair/TF sorted by return/DD; tick & add to Robô 2 (POST /api/bot2/add).
 - Robô 2 (/bot2 screen; db.bots2; positions source "bot2"; logs scope "bot2"), paper by default. Main bot field mt_bot (main|bot2) chooses which bot sends orders to MetaTrader. Tested iteration_13.
 - Simular tab: 'Robô 2' mode simulates Robô 2 setups (same /api/simulate job); 'Retirar negativos' removes from Robô 2. Robô 2 screen has 'Simular estes setups' (→ /simulate?mode=b2).
+- Portfolio: Robô 1 / Robô 2 cards with own P&L, trades, win rate, open count (GET /api/portfolio 'bots'); filter chips Todos/Robô 1/Robô 2/Manual for open positions & history (history limit 300); tags ROBÔ 1 / ROBÔ 2.

@@ -861,17 +861,24 @@ async def portfolio(request: Request):
         unreal += pl
         positions.append({**p, "price": px, "pnl": pl, "pnl_pct": pl / (p["entry"] * p["qty"]) * 100,
                           "display": display(p["symbol"]), "decimals": price_decimals(px)})
-    history = await db.positions.find({"user_id": u["user_id"], "status": "closed"}, {"_id": 0}).sort("closed_at", -1).to_list(100)
+    history = await db.positions.find({"user_id": u["user_id"], "status": "closed"}, {"_id": 0}).sort("closed_at", -1).to_list(300)
     for h in history:
         h["display"] = display(h["symbol"])
         h["decimals"] = price_decimals(h["entry"])
+    # separate results for Robô 1 (source "bot") and Robô 2 (source "bot2")
+    bots = {}
+    for src in ("bot", "bot2"):
+        closed = await db.positions.find({"user_id": u["user_id"], "status": "closed", "source": src}, {"_id": 0, "pnl": 1}).to_list(5000)
+        mine = [p for p in positions if p.get("source") == src]
+        bots[src] = {"realized": sum(p["pnl"] for p in closed), "trades": len(closed), "wins": sum(1 for p in closed if p["pnl"] > 0),
+                     "open": len(mine), "unrealized": sum(p["pnl"] for p in mine)}
     realized = acc["balance"] - acc["start_balance"]
     wins = sum(1 for h in history if h["pnl"] > 0)
     hfx_open = await db.hfx_trades.find({"user_id": u["user_id"], "status": "open"}, {"_id": 0, "amount": 1}).to_list(500)
     locked = sum(t["amount"] for t in hfx_open)
     return {"balance": acc["balance"], "hfx_locked": locked, "equity": acc["balance"] + unreal + locked, "unrealized": unreal, "realized": realized,
             "start_balance": acc["start_balance"], "win_rate": (wins / len(history) * 100) if history else 0,
-            "positions": positions, "history": history}
+            "positions": positions, "history": history, "bots": bots}
 
 
 @api.post("/orders")
