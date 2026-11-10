@@ -110,3 +110,4 @@ Follow-ups: "Faz trades automaticamente", "Está com resultados negativos", "Bai
 - Robô 2 (/bot2 screen; db.bots2; positions source "bot2"; logs scope "bot2"), paper by default. Main bot field mt_bot (main|bot2) chooses which bot sends orders to MetaTrader. Tested iteration_13.
 - Simular tab: 'Robô 2' mode simulates Robô 2 setups (same /api/simulate job); 'Retirar negativos' removes from Robô 2. Robô 2 screen has 'Simular estes setups' (→ /simulate?mode=b2).
 - Portfolio: Robô 1 / Robô 2 cards with own P&L, trades, win rate, open count (GET /api/portfolio 'bots'); filter chips Todos/Robô 1/Robô 2/Manual for open positions & history (history limit 300); tags ROBÔ 1 / ROBÔ 2.
+- mt_bot now main|bot2|both (user set to both). Robô 2 MT spread limit 30% of stop (Robô 1 stays 20%); 1.5% risk cap for both.

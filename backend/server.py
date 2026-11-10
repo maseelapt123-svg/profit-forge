@@ -660,6 +660,7 @@ async def _mt_acc(uid: str) -> Optional[dict]:
 
 _mt_symbols_cache: Dict[str, tuple] = {}
 MT_MAX_SPREAD_OF_STOP = 0.2  # skip MT entries whose spread is more than 20% of the stop distance
+MT_MAX_SPREAD_OF_STOP_BOT2 = 0.3  # Robô 2 accepts spreads up to 30% of the stop
 MT_MAX_RISK_PCT = 1.5  # skip MT entries whose real risk (lot x stop) is above 1.5% of the MT equity
 
 
@@ -689,10 +690,11 @@ async def _go_mt(uid: str, bot: dict, pos: dict) -> bool:
     entry = px["ask"] if buy else px["bid"]
     sig_dist = abs(pos["entry"] - pos["stop_loss"])
     spread = max(0.0, float(px["ask"]) - float(px["bid"]))
-    if sig_dist > 0 and spread > MT_MAX_SPREAD_OF_STOP * sig_dist:
+    max_sp = MT_MAX_SPREAD_OF_STOP_BOT2 if pos.get("source") == "bot2" else MT_MAX_SPREAD_OF_STOP
+    if sig_dist > 0 and spread > max_sp * sig_dist:
         dg0 = int(sp.get("digits", 5))
         await bot_log(uid, "skip", f"{tag}: spread {spread:.{dg0}f} é {spread / sig_dist * 100:.0f}% do stop (máx. "
-                                   f"{MT_MAX_SPREAD_OF_STOP * 100:.0f}%) — não entra no MetaTrader", pos["symbol"])
+                                   f"{max_sp * 100:.0f}%) — não entra no MetaTrader", pos["symbol"])
         return False
     # the stop is placed beyond the spread (otherwise MT rejects it / it is hit instantly); the lot is sized on this
     # wider stop, so the money at risk stays at risk_pct of the MT equity
@@ -983,7 +985,7 @@ class BotIn(BaseModel):
     c_min_return: float = Field(6.0, ge=0, le=50)
     weekly_reopt: bool = True
     live_mode: str = Field("paper", pattern="^(paper|binance|metatrader)$")
-    mt_bot: str = Field("main", pattern="^(main|bot2)$")  # which bot sends orders to MetaTrader
+    mt_bot: str = Field("main", pattern="^(main|bot2|both)$")  # which bot(s) send orders to MetaTrader
     live_max_usd: float = Field(50, ge=5, le=100000)
     mt_max_lots: float = Field(0.1, ge=0.01, le=50)
     mt_suffix: str = Field("", max_length=8)
@@ -1968,7 +1970,7 @@ async def _run_bot_cycle(bot: dict, bot2: bool = False) -> int:
         main["live_mode"] = bot["live_mode"] = "paper"
     # only the bot chosen in "Robô no MetaTrader" sends orders to MT; Robô 2 never uses Binance
     if (bot2 and bot.get("live_mode") != "metatrader") or \
-            (bot.get("live_mode") == "metatrader" and main.get("mt_bot", "main") != ("bot2" if bot2 else "main")):
+            (bot.get("live_mode") == "metatrader" and main.get("mt_bot", "main") not in ("both", "bot2" if bot2 else "main")):
         bot["live_mode"] = "paper"
     await check_exits(uid)
     plugins = await user_plugins(uid)
@@ -2253,7 +2255,7 @@ async def bot2_get(request: Request):
                                        {"_id": 0, "position_id": 1, "symbol": 1, "side": 1, "entry": 1, "tf": 1, "opened_at": 1}).to_list(200)
     stats = {"trades": len(closed), "pnl": sum(p["pnl"] for p in closed), "wins": sum(1 for p in closed if p["pnl"] > 0), "open": len(open_pos)}
     return {"bot": {k: b[k] for k in ("enabled", "risk_pct", "setups", "last_run")},
-            "mt": main.get("live_mode") == "metatrader" and main.get("mt_bot", "main") == "bot2",
+            "mt": main.get("live_mode") == "metatrader" and main.get("mt_bot", "main") in ("bot2", "both"),
             "logs": logs, "stats": stats, "positions": [{**p, "display": display(p["symbol"])} for p in open_pos]}
 
 

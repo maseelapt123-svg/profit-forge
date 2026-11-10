@@ -156,7 +156,7 @@ export default function Bot2Screen() {
             </Text>
           ))}
           <Text style={[styles.note, { paddingHorizontal: 16, marginTop: 8 }]}>
-            Usa a mesma conta simulada do robô principal. Para enviar este robô ao MetaTrader escolhe «Robô 2» em Robô Automático → MetaTrader.
+            Usa a mesma conta simulada do robô principal. Para enviar este robô ao MetaTrader escolhe «Robô 2» ou «Os dois» em Robô Automático → MetaTrader.
           </Text>
         </ScrollView>
       )}
