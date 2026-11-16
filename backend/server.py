@@ -661,7 +661,9 @@ async def _mt_acc(uid: str) -> Optional[dict]:
 _mt_symbols_cache: Dict[str, tuple] = {}
 MT_MAX_SPREAD_OF_STOP = 0.2  # skip MT entries whose spread is more than 20% of the stop distance
 MT_MAX_SPREAD_OF_STOP_BOT2 = 0.3  # Robô 2 accepts spreads up to 30% of the stop
-MT_MAX_RISK_PCT = 1.5  # skip MT entries whose real risk (lot x stop) is above 1.5% of the MT equity
+MT_MAX_RISK_PCT = 2.0  # skip MT entries whose real risk (lot x stop) is above 2% of the MT equity
+MT_MAX_WIDEN = 3.0  # a high spread may widen stop+target up to 3x (same R:R) instead of skipping the entry
+MT_MIN_NET_RR = 1.0  # after the spread, the target must still be at least as big as the stop + spread
 
 
 async def _go_mt(uid: str, bot: dict, pos: dict) -> bool:
@@ -689,17 +691,29 @@ async def _go_mt(uid: str, bot: dict, pos: dict) -> bool:
     buy = pos["side"] == "BUY"
     entry = px["ask"] if buy else px["bid"]
     sig_dist = abs(pos["entry"] - pos["stop_loss"])
+    sig_tp = abs(pos["take_profit"] - pos["entry"])
     spread = max(0.0, float(px["ask"]) - float(px["bid"]))
     max_sp = MT_MAX_SPREAD_OF_STOP_BOT2 if pos.get("source") == "bot2" else MT_MAX_SPREAD_OF_STOP
+    dg0 = int(sp.get("digits", 5))
     if sig_dist > 0 and spread > max_sp * sig_dist:
-        dg0 = int(sp.get("digits", 5))
-        await bot_log(uid, "skip", f"{tag}: spread {spread:.{dg0}f} é {spread / sig_dist * 100:.0f}% do stop (máx. "
-                                   f"{max_sp * 100:.0f}%) — não entra no MetaTrader", pos["symbol"])
+        # spread too big for this stop: widen stop AND target by the same factor (same R:R) so the spread fits;
+        # the lot is sized on the wider stop, so the money at risk does not grow
+        k = spread / (max_sp * sig_dist)
+        if k > MT_MAX_WIDEN:
+            await bot_log(uid, "skip", f"{tag}: spread {spread:.{dg0}f} é {spread / sig_dist * 100:.0f}% do stop — nem com stop "
+                                       f"{MT_MAX_WIDEN:g}× maior compensa — não entra no MetaTrader", pos["symbol"])
+            return False
+        sig_dist, sig_tp = sig_dist * k, sig_tp * k
+        await bot_log(uid, "info", f"{tag}: spread {spread:.{dg0}f} alto — stop e alvo alargados {k:.1f}× (mesmo R:R) para entrar no MetaTrader",
+                      pos["symbol"])
+    # still profitable after costs: target vs stop + spread must stay >= MT_MIN_NET_RR
+    if sig_dist <= 0 or sig_tp / (sig_dist + spread) < MT_MIN_NET_RR:
+        await bot_log(uid, "skip", f"{tag}: com o spread {spread:.{dg0}f} o alvo deixa de compensar o risco — não entra no MetaTrader", pos["symbol"])
         return False
     # the stop is placed beyond the spread (otherwise MT rejects it / it is hit instantly); the lot is sized on this
     # wider stop, so the money at risk stays at risk_pct of the MT equity
     dist = sig_dist + spread + float(sp.get("stopsLevel", 0) or 0) * float(sp.get("point") or 0)
-    tp_dist = abs(pos["take_profit"] - pos["entry"]) + spread
+    tp_dist = sig_tp + spread
     tick_val = px.get("lossTickValue") or sp.get("tickValue") or 0
     tick_size = sp.get("tickSize") or 10 ** -int(sp.get("digits", 5))
     if dist <= 0 or not tick_val:

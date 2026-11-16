@@ -280,7 +280,7 @@ export default function BotScreen() {
               />
               {cfg.mt_bot && cfg.mt_bot !== "main" && (
                 <Text style={[styles.note, { paddingHorizontal: 16 }]} testID="bot-mt-bot-note">
-                  {cfg.mt_bot === "bot2" ? "O Robô 1 fica na conta simulada; só o Robô 2 abre trades no MetaTrader." : "Robô 1 e Robô 2 abrem trades na mesma conta MetaTrader, cada um com os seus setups."} O Robô 2 aceita spread até 30% do stop (Robô 1: 20%); risco máximo 1,5% nos dois.
+                  {cfg.mt_bot === "bot2" ? "O Robô 1 fica na conta simulada; só o Robô 2 abre trades no MetaTrader." : "Robô 1 e Robô 2 abrem trades na mesma conta MetaTrader, cada um com os seus setups."} O Robô 2 aceita spread até 30% do stop (Robô 1: 20%) — se o spread for maior, o stop e o alvo são alargados até 3× (mesmo R:R) para entrar; risco máximo 2% nos dois.
                 </Text>
               )}
               <MtAccount
