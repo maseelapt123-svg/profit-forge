@@ -1461,6 +1461,175 @@ async def simulate_status(job_id: str, request: Request):
     return out
 
 
+# ---------- MetaTrader simulation: Robô 1 + Robô 2 replayed with the broker's real spread, lots and MT rules ----------
+class MtSimIn(BaseModel):
+    days: int = Field(30, ge=7, le=90)
+
+
+def _mt_walk(df: pd.DataFrame, t: dict, d: int, dist: float, tp_dist: float, s: float):
+    """Replay one MT trade on the candles (mid prices): buy at ask / close at bid, sell at bid / close at ask.
+    Returns (entry, exit, bar index, reason)."""
+    o, h, l, c = (df[x].to_numpy(float) for x in ("open", "high", "low", "close"))
+    entry = float(c[t["io"]]) + d * s / 2
+    sl, tp = entry - d * dist, entry + d * tp_dist
+    for i in range(t["io"] + 1, len(c)):
+        if d == 1:
+            if l[i] - s / 2 <= sl:
+                return entry, min(o[i] - s / 2, sl), i, "SL"
+            if h[i] - s / 2 >= tp:
+                return entry, tp, i, "TP"
+        else:
+            if h[i] + s / 2 >= sl:
+                return entry, max(o[i] + s / 2, sl), i, "SL"
+            if l[i] + s / 2 <= tp:
+                return entry, tp, i, "TP"
+        if t["reason"] == "Sinal" and i >= t["ic"]:
+            return entry, float(c[i]) - d * s / 2, i, "Sinal"
+    return entry, float(c[-1]) - d * s / 2, len(c) - 1, "Aberta"
+
+
+def _mt_stats(tr: list, eq0: float) -> dict:
+    tr = sorted(tr, key=lambda x: x["closed"])
+    eq, peak, dd = eq0, eq0, 0.0
+    for x in tr:
+        eq += x["pnl"]
+        peak = max(peak, eq)
+        dd = max(dd, (peak - eq) / peak * 100 if peak > 0 else 100.0)
+    n, w = len(tr), sum(1 for x in tr if x["pnl"] > 0)
+    return {"trades": n, "wins": w, "winrate": round(w / n * 100, 1) if n else 0.0, "pnl": round(eq - eq0, 2),
+            "pct": round((eq - eq0) / eq0 * 100, 2) if eq0 else 0.0, "final": round(eq, 2), "max_dd": round(dd, 2)}
+
+
+async def _mt_sim_job(job: dict, uid: str) -> None:
+    try:
+        main = await get_bot(uid)
+        b2 = await get_bot2(uid, main)
+        acc = await _mt_acc(uid)
+        aid, reg = acc["account_id"], acc["region"]
+        inf = await metaapi_exec.info(aid, reg)
+        eq0 = float(inf.get("equity", 0))
+        job.update(capital=eq0, currency=inf.get("currency", ""))
+        items = []
+        for bname, b in (("bot", main), ("bot2", b2)):
+            for s in b.get("setups") or []:
+                if s.get("test") is None or _qualifies(s["test"], s.get("wr") or 0):
+                    items.append({"bot": bname, "kind": "setup", **s})
+        for kind in ("c12", "c20"):
+            if main.get(f"{kind}_enabled"):
+                for p in main.get(f"{kind}_pairs") or []:
+                    if p.get("enabled"):
+                        items.append({"bot": "bot", "kind": kind, "symbol": p["symbol"], "tf": p["tf"], "rr": p["rr"], "min": p["min"],
+                                      "sl_atr": main["sl_atr"], "strategy": "confirm12" if kind == "c12" else "confirm20"})
+        job["steps"] = len(items)
+        names = set(await metaapi_exec.symbols(aid, reg))
+        specs: Dict[str, tuple] = {}
+        cut = pd.Timestamp(datetime.now(timezone.utc) - timedelta(days=job["days"]))
+        plugins = await user_plugins(uid)
+        raw = []
+        for it in items:
+            label = f"{display(it['symbol'])} {it['tf'].upper()}"
+            job["current"] = label
+            row = {"bot": it["bot"], "label": label, "kind": it["kind"], "strategy": it["strategy"], "trades": [], "skip": {}}
+            job["rows"].append(row)
+            job["step"] += 1
+            mt_sym = metaapi_exec.to_mt_symbol(it["symbol"], main.get("mt_suffix", ""))
+            if not mt_sym or mt_sym not in names:
+                row["error"] = "Não existe na corretora"
+                continue
+            try:
+                if mt_sym not in specs:
+                    sp = await metaapi_exec.spec(aid, reg, mt_sym)
+                    px = await metaapi_exec.price(aid, reg, mt_sym)
+                    specs[mt_sym] = (sp, max(0.0, float(px["ask"]) - float(px["bid"])), px.get("lossTickValue"))
+                df = await get_df(it["symbol"], it["tf"], long=True)
+                htf = await get_htf(it["symbol"], it["tf"])
+            except HTTPException as e:
+                row["error"] = e.detail
+                continue
+            except (metaapi_exec.MetaApiError, httpx.HTTPError) as e:
+                row["error"] = f"MetaTrader: {str(e)[:80]}"
+                continue
+            sp, spread, ltv = specs[mt_sym]
+            row["spread"], row["digits"] = spread, int(sp.get("digits", 5))
+            c_kind = it["kind"] in ("c12", "c20")
+            pl = {**plugins, "_c12": {"min": it.get("min", 10)}, "_c20": {"min": it.get("min", 16)}}
+            fee = FEES[ASSET_INFO[it["symbol"]]["category"]]
+            res = await asyncio.to_thread(run_backtest, df, it["strategy"], pl, it["sl_atr"], it["rr"], 1.0, 10000.0, fee,
+                                          False if c_kind else it.get("trend_filter", True), False,
+                                          (c_kind or it.get("mtf", False)) and htf is not None, htf, 0.0, 1.0, True)
+            for t in res["trades"]:
+                op = pd.Timestamp(t["opened"])
+                if (op.tz_convert("UTC") if op.tzinfo else op.tz_localize("UTC")) >= cut:
+                    raw.append({**t, "row": row, "df": df, "sp": sp, "spread": spread, "ltv": ltv, "rr": it["rr"], "bot": it["bot"]})
+        job["current"] = "A aplicar regras MetaTrader"
+        raw.sort(key=lambda x: x["opened"])
+        done = []
+        for t in raw:
+            row, sp, s, bname = t["row"], t["sp"], t["spread"], t["bot"]
+            eq = eq0 + sum(x["pnl"] for x in done if x["closed"] <= t["opened"])  # equity when the trade opens (compounding)
+            max_sp = MT_MAX_SPREAD_OF_STOP_BOT2 if bname == "bot2" else MT_MAX_SPREAD_OF_STOP
+            sig, sig_tp, k = t["stop"], t["stop"] * t["rr"], 1.0
+            if sig > 0 and s > max_sp * sig:
+                k = s / (max_sp * sig)
+                if k > MT_MAX_WIDEN:
+                    row["skip"]["spread"] = row["skip"].get("spread", 0) + 1
+                    continue
+                sig, sig_tp = sig * k, sig_tp * k
+            if sig <= 0 or sig_tp / (sig + s) < MT_MIN_NET_RR:
+                row["skip"]["rr"] = row["skip"].get("rr", 0) + 1
+                continue
+            dist = sig + s + float(sp.get("stopsLevel", 0) or 0) * float(sp.get("point") or 0)
+            tick_val = t["ltv"] or sp.get("tickValue") or 0
+            tick_size = sp.get("tickSize") or 10 ** -int(sp.get("digits", 5))
+            if not tick_val or eq <= 0:
+                continue
+            loss_per_lot = dist / tick_size * tick_val
+            b = main if bname == "bot" else b2
+            step, vmin = float(sp.get("volumeStep", 0.01)), float(sp.get("minVolume", 0.01))
+            vol = min(float(main.get("mt_max_lots", 0.1)), float(sp.get("maxVolume", 100)),
+                      math.floor(eq * float(b.get("risk_pct", 1)) / 100 / loss_per_lot / step + 1e-9) * step)
+            vol = round(max(vol, vmin), 2)
+            if vol * loss_per_lot / eq * 100 > MT_MAX_RISK_PCT:
+                row["skip"]["risk"] = row["skip"].get("risk", 0) + 1
+                continue
+            d = 1 if t["dir"] == "BUY" else -1
+            entry, exit_px, ic, reason = _mt_walk(t["df"], t, d, dist, sig_tp + s, s)
+            pnl = (exit_px - entry) * d / tick_size * tick_val * vol
+            x = {"bot": bname, "label": row["label"], "dir": t["dir"], "opened": t["opened"], "closed": t["df"].index[ic].isoformat(),
+                 "vol": vol, "widen": round(k, 2), "pnl": round(pnl, 2), "reason": reason, "risk_pct": round(float(vol * loss_per_lot / eq * 100), 2)}
+            done.append(x)
+            row["trades"].append(x)
+        for row in job["rows"]:
+            row["stats"] = _mt_stats(row.pop("trades"), eq0)
+        job["total"] = {"all": _mt_stats(done, eq0), "bot": _mt_stats([x for x in done if x["bot"] == "bot"], eq0),
+                        "bot2": _mt_stats([x for x in done if x["bot"] == "bot2"], eq0)}
+        job["widened"] = sum(1 for x in done if x["widen"] > 1)
+        job["trades"] = sorted(done, key=lambda x: x["opened"], reverse=True)[:60]
+        job["skipped"] = {k: sum(r["skip"].get(k, 0) for r in job["rows"]) for k in ("spread", "risk", "rr")}
+    except (metaapi_exec.MetaApiError, httpx.HTTPError) as e:
+        job["error"] = f"MetaTrader indisponível — liga a conta na MetaApi e tenta de novo ({str(e)[:80]})"
+    except Exception:
+        logger.exception("mt simulation failed")
+        job["error"] = "Falha na simulação MetaTrader"
+    finally:
+        job["status"], job["current"] = "done", None
+
+
+@api.post("/mt/simulate")
+async def mt_simulate(body: MtSimIn, request: Request):
+    u = await get_user(request)
+    if not metaapi_exec.configured() or not await _mt_acc(u["user_id"]):
+        raise HTTPException(400, "Liga primeiro a conta MetaTrader no Robô Automático")
+    if any(v["user_id"] == u["user_id"] and v["status"] == "running" for v in _sim_jobs.values()):
+        raise HTTPException(429, "Já tens uma simulação em curso")
+    job_id = uuid.uuid4().hex[:12]
+    job = _sim_jobs[job_id] = {"job_id": job_id, "user_id": u["user_id"], "kind": "mt", "status": "running", "started": time.time(),
+                               "current": None, "step": 0, "steps": 0, "rows": [], "days": body.days}
+    asyncio.create_task(_mt_sim_job(job, u["user_id"]))
+    return {"job_id": job_id}
+
+
+
 C20_OPT_TFS = ["5m", "15m", "1h", "4h", "1d"]
 C20_OPT_RR = [5.0, 10.0]
 C20_OPT_MIN = [14, 16, 18]

@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api, fmt, money } from "@/src/api";
 import { MarketScan } from "@/src/components/market-scan";
+import { MtSim } from "@/src/components/mt-sim";
 import { NegOptimize } from "@/src/components/neg-optimize";
 import { useToast } from "@/src/components/toast";
 import { Button, ChipRow, haptic } from "@/src/components/ui";
@@ -49,7 +50,7 @@ export default function Simulate() {
   const [sel, setSel] = useState<string[] | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const params = useLocalSearchParams<{ mode?: string }>();
-  const [mode, setMode] = useState<"bot" | "b2" | "scan">(params.mode === "b2" ? "b2" : "bot");
+  const [mode, setMode] = useState<"bot" | "b2" | "mt" | "scan">(params.mode === "b2" ? "b2" : "bot");
   useEffect(() => {
     if (params.mode === "b2") setMode("b2");
   }, [params.mode]);
@@ -148,11 +149,15 @@ export default function Simulate() {
       <View style={styles.header}>
         <Text style={styles.title}>Simulação</Text>
         <Text style={styles.subtitle}>
-          {mode === "scan" ? "Procura os pares e estratégias mais lucrativos de um mercado e envia-os para o Robô 2" : "Calcula com juros compostos quanto as estratégias teriam feito no período, com e sem filtro IA"}
+          {mode === "scan" ? "Procura os pares e estratégias mais lucrativos de um mercado e envia-os para o Robô 2" : mode === "mt" ? "Quanto os dois robôs teriam feito na tua conta MetaTrader, com spreads e lotes reais" : "Calcula com juros compostos quanto as estratégias teriam feito no período, com e sem filtro IA"}
         </Text>
       </View>
-      <ChipRow options={[{ value: "bot", label: "Robô principal" }, { value: "b2", label: "Robô 2" }, { value: "scan", label: "Vários pares" }]} value={mode} onChange={setMode} testID="sim-mode" />
-      {mode === "scan" ? (
+      <ChipRow options={[{ value: "bot", label: "Robô 1" }, { value: "b2", label: "Robô 2" }, { value: "mt", label: "MetaTrader" }, { value: "scan", label: "Vários pares" }]} value={mode} onChange={setMode} testID="sim-mode" />
+      {mode === "mt" ? (
+        <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}>
+          <MtSim />
+        </ScrollView>
+      ) : mode === "scan" ? (
         <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}>
           <MarketScan />
         </ScrollView>

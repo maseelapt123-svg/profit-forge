@@ -113,3 +113,4 @@ Follow-ups: "Faz trades automaticamente", "Está com resultados negativos", "Bai
 - mt_bot now main|bot2|both (user set to both). Robô 2 MT spread limit 30% of stop (Robô 1 stays 20%); 1.5% risk cap for both.
 - MT entries: risk cap now 2% of MT equity; high spread no longer skips — stop+TP widened up to 3x (same R:R, lot resized) and entry requires target >= stop+spread (MT_MIN_NET_RR=1). User MT equity ~132 EUR, so 0.01 lot often > 2% risk on wide-stop pairs.
 - MetaTrader duration: '1 semana' or 'Sem data de fim' (mt_no_end); user set to no end.
+- Simular → MetaTrader mode (POST /api/mt/simulate, GET /api/simulate/{id}): replays Robô 1 (setups+12C/20C) and Robô 2 on the real MT equity with live broker spread, min lot/step, 2% cap, stop widening up to 3x, ask/bid fills, no partial/BE; results total + per bot + per setup + skipped counts.

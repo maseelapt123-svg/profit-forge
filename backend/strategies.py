@@ -729,7 +729,8 @@ def simulate(df, sig, sl_atr=1.5, rr=2.0, risk_pct=1.0, capital=10000.0, fee=0.0
                     reason = "Parcial+BE"
                 trades.append({"dir": "BUY" if pos["dir"] == 1 else "SELL", "entry": pos["entry"], "exit": float(exit_px),
                                "pnl": float(pnl), "r": float(pnl / pos["risk"]) if pos["risk"] else 0.0,
-                               "reason": reason, "opened": times[pos["i"]].isoformat(), "closed": times[i].isoformat()})
+                               "reason": reason, "opened": times[pos["i"]].isoformat(), "closed": times[i].isoformat(),
+                               "stop": float(pos["stop"]), "io": int(pos["i"]), "ic": int(i)})
                 pos = None
         # skip setups whose stop is so tight that costs would eat >12% of the risk
         if pos is None and sig[i] != 0 and a[i] > 0 and eq > 0 and sl_atr * a[i] < 8 * fee * c[i]:
