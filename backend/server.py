@@ -954,7 +954,7 @@ BOT_DEFAULT = {"enabled": False, "symbols": ["BTC-USD", "ETH-USD", "EURUSD=X"], 
                "risk_pct": 1.0, "sl_atr": 1.5, "rr": 2.0, "max_positions": 30, "ai_filter": False,
                "conf_votes": 2, "conf_score": 55.0, "c12_enabled": False, "c12_min": 10, "c12_max_positions": 30, "c12_tf": "1h",
                "c20_enabled": False, "c20_min": 16, "c20_max_positions": 30, "c20_tf": "1h", "c20_rr": 5.0, "c20_ptp_r": 2.0,
-               "ptp_enabled": True, "breakeven_enabled": True, "ptp_pct": 50.0, "ptp_r": 1.0, "c20_pairs": [], "c12_pairs": [], "c_min_return": 6.0, "weekly_reopt": True, "live_mode": "paper", "mt_bot": "main", "live_max_usd": 50.0,
+               "ptp_enabled": True, "breakeven_enabled": True, "ptp_pct": 50.0, "ptp_r": 1.0, "c20_pairs": [], "c12_pairs": [], "c_min_return": 6.0, "weekly_reopt": True, "live_mode": "paper", "mt_bot": "main", "mt_no_end": False, "live_max_usd": 50.0,
                "mt_max_lots": 0.1, "mt_suffix": ""}
 
 
@@ -1000,6 +1000,7 @@ class BotIn(BaseModel):
     weekly_reopt: bool = True
     live_mode: str = Field("paper", pattern="^(paper|binance|metatrader)$")
     mt_bot: str = Field("main", pattern="^(main|bot2|both)$")  # which bot(s) send orders to MetaTrader
+    mt_no_end: bool = False  # MetaTrader mode without the 1-week end date
     live_max_usd: float = Field(50, ge=5, le=100000)
     mt_max_lots: float = Field(0.1, ge=0.01, le=50)
     mt_suffix: str = Field("", max_length=8)
@@ -2160,7 +2161,9 @@ async def bot_put(body: BotIn, request: Request):
     data["setups"] = [st.model_dump() for st in body.setups if st.symbol in syms]
     data.pop("overrides", None)
     unset = {"overrides": ""}
-    if data.get("live_mode") == "metatrader" and prev.get("live_mode") != "metatrader":
+    if data.get("live_mode") == "metatrader" and data.get("mt_no_end"):
+        unset["live_until"] = ""  # stays on MetaTrader until the user switches it off
+    elif data.get("live_mode") == "metatrader" and (prev.get("live_mode") != "metatrader" or not prev.get("live_until")):
         data["live_until"] = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()  # 1-week demo run, then back to paper
     elif data.get("live_mode") != "metatrader":
         unset["live_until"] = ""
